@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>选股引擎 — 登录</title>
+  <style>
+    body { font-family: 'Segoe UI', sans-serif; background: #0f1117; color: #e0e0e0; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+    .box { background: #1a1d2e; border: 1px solid #2d3150; border-radius: 12px; padding: 40px; width: 340px; }
+    h2 { margin: 0 0 24px; font-size: 1.4rem; color: #7c83f5; text-align: center; }
+    label { font-size: .85rem; color: #9aa0c0; }
+    input { width: 100%; box-sizing: border-box; margin: 6px 0 16px; padding: 10px 12px; background: #0f1117; border: 1px solid #2d3150; border-radius: 8px; color: #e0e0e0; font-size: .95rem; }
+    button { width: 100%; padding: 11px; background: #7c83f5; border: none; border-radius: 8px; color: #fff; font-size: 1rem; cursor: pointer; }
+    button:hover { background: #6b72e0; }
+    .err { color: #e05c5c; font-size: .85rem; margin-bottom: 12px; }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <h2>📈 选股引擎</h2>
+    {% if error %}<p class="err">{{ error }}</p>{% endif %}
+    <form method="POST">
+      <label>用户名</label>
+      <input type="text" name="username" autofocus>
+      <label>密码</label>
+      <input type="password" name="password">
+      <button type="submit">登录</button>
+    </form>
+  </div>
+</body>
+</html>
