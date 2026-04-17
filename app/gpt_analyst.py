@@ -201,7 +201,8 @@ def _resolve_model_and_backend() -> tuple:
     """
     m = _LLM_MODEL.strip()
     if m.lower().startswith("deepseek"):
-        return "deepseek", m
+        # LLM_MODEL 决定后端，DEEPSEEK_MODEL 决定实际模型名
+        return "deepseek", _DS_MODEL or m
     if m:  # 明确指定了非 deepseek 模型（如 gpt-4.1）
         return "gpt", m
     # 未设置 LLM_MODEL：有 DeepSeek key 则用 DeepSeek，否则用 GPT
