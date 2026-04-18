@@ -74,12 +74,12 @@ _SYSTEM_PROMPT = """\
 - 一句话结论：普涨 / 分化 / 退潮 / 修复，以及对监控标的整体影响
 
 ### 2) 逐股深度分析（每只股票必须包含以下子节）
-1. **公司业务定位**（主营、核心产品、产业链位置）— 需联网核实
-2. **当前市场叙事与阶段**（启动/强化/分歧/退潮）— 需联网核实
-3. **行业龙头与板块阶段** — 需联网核实
+1. **公司业务定位**（主营、核心产品、产业链位置）— 基于提供的 company_profile 数据（行业、经营范围），结合自身知识补充
+2. **当前市场叙事与阶段**（启动/强化/分歧/退潮）— 基于 recent_news 和资金流数据判断
+3. **行业龙头与板块阶段** — 基于公司所属行业和自身知识分析
 4. **技术面** — MA5/MA10/MA20/MA60 排列；当前价格相对均线位置；RSI/MACD/KDJ 状态；量比异动；关键压力位/支撑位/失效位
-5. **资金面** — 主力净流入/流出趋势，超大单/大单结构，连续天数；量化短线/中长线评分（若有）
-6. **舆情与事件面**（利多/利空/争议点）— 需联网核实
+5. **资金面** — 主力净流入/流出趋势，超大单/大单/中单/小单结构，连续天数；量化短线/中长线评分（若有）
+6. **舆情与事件面**（利多/利空/争议点）— 基于 recent_news 数据判断，结合自身知识补充
 7. **双逻辑判断**
    - 产业逻辑：在 / 弱化 / 失效（附原因）
    - 交易逻辑：在 / 弱化 / 失效（附原因）
@@ -103,7 +103,7 @@ _SYSTEM_PROMPT = """\
 > 用一句话（≤30字）概括本次分析的核心结论，格式：**「{代码} {名称}：{状态} — {建议动作}」**，多只股票依次列出。
 
 ## 注意事项
-- 仅基于调用方提供的结构化数据写作"数据摘要"；基本面/舆情部分须明确标注"需联网核实"。
+- 优先使用提供的结构化数据（company_profile、recent_news、fund_flow 细分、fundamental 扩展指标）写作相应章节；如果某部分数据缺失，则标注"数据缺失，建议补充"。
 - 如果结构化数据不足（如技术指标缺失），在不确定性部分说明并建议补充。
 - 输出语言：中文为主，技术指标名词可中英混写。
 - 报告末尾必须有"一句话总结"章节。
@@ -156,6 +156,8 @@ def _build_prompt(codes: List[str], sentiment: dict, stocks_data: list) -> str:
                 "ma60": ti.get("ma60"),
                 "rsi": ti.get("rsi"),
                 "macd": ti.get("macd"),
+                "dif": ti.get("dif"),
+                "dea": ti.get("dea"),
                 "kdj_k": ti.get("kdj_k"),
                 "kdj_d": ti.get("kdj_d"),
                 "kdj_j": ti.get("kdj_j"),
@@ -163,8 +165,44 @@ def _build_prompt(codes: List[str], sentiment: dict, stocks_data: list) -> str:
                 "boll_mid": ti.get("boll_mid"),
                 "boll_lower": ti.get("boll_lower"),
                 "atr": ti.get("atr"),
+                "adx": ti.get("adx"),
                 "short_score": ti.get("short_score"),
                 "long_score": ti.get("long_score"),
+            }
+        # 趋势详情
+        trend = s.get("trend") or {}
+        if trend:
+            entry["trend"] = {
+                "rating": trend.get("rating"),
+                "reasons": trend.get("reasons", []),
+            }
+        # 动量
+        momentum = s.get("momentum") or {}
+        if momentum:
+            entry["momentum"] = {
+                "returns_5d": momentum.get("returns_5d"),
+                "returns_20d": momentum.get("returns_20d"),
+            }
+        # 量能
+        vol = s.get("volume") or {}
+        if vol:
+            entry["volume_analysis"] = {
+                "obv_trend": vol.get("obv_trend"),
+                "volume_ratio": vol.get("volume_ratio"),
+            }
+        # 波动率
+        vix = s.get("volatility") or {}
+        if vix:
+            entry["volatility"] = {
+                "value": vix.get("value"),
+                "rating": vix.get("rating"),
+            }
+        # 乖离率
+        bias = s.get("bias") or {}
+        if bias:
+            entry["bias"] = {
+                "bias_20": bias.get("bias_20"),
+                "bias_60": bias.get("bias_60"),
             }
         # 资金流
         ff = s.get("fund_flow") or {}
@@ -177,7 +215,47 @@ def _build_prompt(codes: List[str], sentiment: dict, stocks_data: list) -> str:
                 "medium_net": ff.get("medium_net"),
                 "small_net": ff.get("small_net"),
                 "days_continuous": ff.get("days_continuous"),
+                "signal": ff.get("signal"),
             }
+        # 选股信号
+        if s.get("buy_signals"):
+            entry["buy_signals"] = s["buy_signals"]
+        if s.get("sell_signals"):
+            entry["sell_signals"] = s["sell_signals"]
+        if s.get("stop_loss"):
+            entry["trade_plan"] = {
+                "stop_loss": s.get("stop_loss"),
+                "take_profit": s.get("take_profit"),
+                "stop_loss_pct": s.get("stop_loss_pct"),
+                "take_profit_pct": s.get("take_profit_pct"),
+                "risk_reward_ratio": s.get("risk_reward_ratio"),
+            }
+        # 公司画像（行业、经营范围）
+        profile = s.get("company_profile") or {}
+        if profile:
+            entry["company_profile"] = {
+                "industry": profile.get("industry"),
+                "business_scope": profile.get("business_scope"),
+                "pb_ratio": profile.get("pb_ratio"),
+                "total_market_cap": profile.get("total_market_cap"),
+            }
+        # 扩展基本面（毛利率、净利率、负债率等）
+        fund_ext = s.get("fundamental") or {}
+        if fund_ext:
+            entry["fundamental"] = {
+                "roe": fund_ext.get("roe"),
+                "pe": fund_ext.get("pe"),
+                "pb": fund_ext.get("pb"),
+                "gross_margin": fund_ext.get("gross_margin"),
+                "net_margin": fund_ext.get("net_margin"),
+                "debt_to_asset": fund_ext.get("debt_to_asset"),
+                "profit_growth": fund_ext.get("profit_growth"),
+                "dividend_yield": fund_ext.get("dividend_yield"),
+            }
+        # 最近新闻
+        news = s.get("recent_news") or []
+        if news:
+            entry["recent_news"] = news
         payload["stocks"].append(entry)
 
     return (

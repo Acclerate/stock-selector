@@ -96,10 +96,55 @@ class StockCache:
                 dividend_yield REAL,
                 revenue_growth REAL,
                 pe REAL,
+                gross_margin REAL,
+                net_margin REAL,
+                debt_to_asset REAL,
+                pb REAL,
                 update_time TIMESTAMP
             )
         ''')
-        
+
+        # 公司画像表（行业、经营范围、市值等）
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS company_profile (
+                code TEXT PRIMARY KEY,
+                industry TEXT,
+                business_scope TEXT,
+                pb REAL,
+                total_market_cap REAL,
+                float_market_cap REAL,
+                update_time TIMESTAMP
+            )
+        ''')
+
+        # 股票新闻缓存表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS stock_news (
+                code TEXT PRIMARY KEY,
+                news_json TEXT,
+                update_time TIMESTAMP
+            )
+        ''')
+
+        self.conn.commit()
+
+        # ── 兼容旧库：为已有表添加新列 ──────────────────────────────────
+        _migrations = [
+            ("fund_flow", "super_large_net", "REAL"),
+            ("fund_flow", "large_net", "REAL"),
+            ("fund_flow", "medium_net", "REAL"),
+            ("fund_flow", "small_net", "REAL"),
+            ("fund_flow", "days_continuous", "INTEGER"),
+            ("fundamental", "gross_margin", "REAL"),
+            ("fundamental", "net_margin", "REAL"),
+            ("fundamental", "debt_to_asset", "REAL"),
+            ("fundamental", "pb", "REAL"),
+        ]
+        for table, col, ctype in _migrations:
+            try:
+                cursor.execute(f'ALTER TABLE {table} ADD COLUMN {col} {ctype}')
+            except Exception:
+                pass
         self.conn.commit()
     
     def save_stocks(self, stocks_data: List[Dict]):
@@ -124,10 +169,11 @@ class StockCache:
         
         self.conn.commit()
     
-    def get_stock(self, code: str) -> Optional[Dict]:
-        """获取单只股票数据"""
+    def get_stock(self, code: str, max_age_minutes: int = 30) -> Optional[Dict]:
+        """获取单只股票数据，max_age_minutes 内的缓存有效"""
         cursor = self.conn.cursor()
-        cursor.execute('SELECT * FROM stocks WHERE code = ?', (code,))
+        cutoff = datetime.now() - timedelta(minutes=max_age_minutes)
+        cursor.execute('SELECT * FROM stocks WHERE code = ? AND update_time > ?', (code, cutoff))
         row = cursor.fetchone()
         
         if row:
@@ -211,35 +257,49 @@ class StockCache:
         cursor = self.conn.cursor()
         cursor.execute('''
             INSERT OR REPLACE INTO fund_flow
-            (code, main_in, retail_in, main_ratio, update_time)
-            VALUES (?, ?, ?, ?, ?)
+            (code, main_in, retail_in, main_ratio,
+             super_large_net, large_net, medium_net, small_net, days_continuous,
+             update_time)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             code,
-            data['main_in'],
-            data['retail_in'],
-            data['main_ratio'],
+            data.get('main_in', 0),
+            data.get('retail_in', 0),
+            data.get('main_ratio', 0),
+            data.get('super_large_net', 0),
+            data.get('large_net', 0),
+            data.get('medium_net', 0),
+            data.get('small_net', 0),
+            data.get('days_continuous', 0),
             datetime.now()
         ))
         self.conn.commit()
-    
+
     def get_fund_flow(self, code: str, max_age_hours=24) -> Optional[Dict]:
         """获取主力资金数据"""
         cursor = self.conn.cursor()
         cutoff = datetime.now() - timedelta(hours=max_age_hours)
-        
+
         cursor.execute('''
-            SELECT main_in, retail_in, main_ratio, update_time
+            SELECT main_in, retail_in, main_ratio,
+                   super_large_net, large_net, medium_net, small_net, days_continuous,
+                   update_time
             FROM fund_flow
             WHERE code = ? AND update_time > ?
         ''', (code, cutoff))
-        
+
         row = cursor.fetchone()
         if row:
             return {
                 'main_in': row[0],
                 'retail_in': row[1],
                 'main_ratio': row[2],
-                'update_time': row[3]
+                'super_large_net': row[3],
+                'large_net': row[4],
+                'medium_net': row[5],
+                'small_net': row[6],
+                'days_continuous': row[7],
+                'update_time': row[8]
             }
         return None
     
@@ -355,6 +415,8 @@ class StockCache:
         cursor.execute('DELETE FROM stocks WHERE update_time < ?', (cutoff,))
         cursor.execute('DELETE FROM fund_flow WHERE update_time < ?', (cutoff,))
         cursor.execute('DELETE FROM lhb WHERE update_time < ?', (cutoff,))
+        cursor.execute('DELETE FROM company_profile WHERE update_time < ?', (cutoff,))
+        cursor.execute('DELETE FROM stock_news WHERE update_time < ?', (cutoff,))
         
         self.conn.commit()
     
@@ -396,8 +458,9 @@ class StockCache:
         cursor = self.conn.cursor()
         cursor.execute('''
             INSERT OR REPLACE INTO fundamental
-            (code, roe, profit_growth, dividend_yield, revenue_growth, pe, update_time)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            (code, roe, profit_growth, dividend_yield, revenue_growth, pe,
+             gross_margin, net_margin, debt_to_asset, pb, update_time)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             code,
             data.get('roe', 0.0),
@@ -405,6 +468,10 @@ class StockCache:
             data.get('dividend_yield', 0.0),
             data.get('revenue_growth', 0.0),
             data.get('pe', 0.0),
+            data.get('gross_margin', 0.0),
+            data.get('net_margin', 0.0),
+            data.get('debt_to_asset', 0.0),
+            data.get('pb', 0.0),
             datetime.now()
         ))
         self.conn.commit()
@@ -414,7 +481,8 @@ class StockCache:
         cursor = self.conn.cursor()
         cutoff = datetime.now() - timedelta(hours=max_age_hours)
         cursor.execute('''
-            SELECT roe, profit_growth, dividend_yield, revenue_growth, pe
+            SELECT roe, profit_growth, dividend_yield, revenue_growth, pe,
+                   gross_margin, net_margin, debt_to_asset, pb
             FROM fundamental
             WHERE code = ? AND update_time > ?
         ''', (code, cutoff))
@@ -426,7 +494,76 @@ class StockCache:
                 'dividend_yield': row[2],
                 'revenue_growth': row[3],
                 'pe': row[4],
+                'gross_margin': row[5],
+                'net_margin': row[6],
+                'debt_to_asset': row[7],
+                'pb': row[8],
             }
+        return None
+
+    # ── 公司画像 ──────────────────────────────────────────────────────
+
+    def save_company_profile(self, code: str, data: Dict):
+        """保存公司画像（行业、经营范围等）"""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            INSERT OR REPLACE INTO company_profile
+            (code, industry, business_scope, pb, total_market_cap, float_market_cap, update_time)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            code,
+            data.get('industry', ''),
+            data.get('business_scope', ''),
+            data.get('pb', 0.0),
+            data.get('total_market_cap', 0.0),
+            data.get('float_market_cap', 0.0),
+            datetime.now()
+        ))
+        self.conn.commit()
+
+    def get_company_profile(self, code: str, max_age_hours: int = 24) -> Optional[Dict]:
+        """获取公司画像缓存"""
+        cursor = self.conn.cursor()
+        cutoff = datetime.now() - timedelta(hours=max_age_hours)
+        cursor.execute('''
+            SELECT industry, business_scope, pb, total_market_cap, float_market_cap, update_time
+            FROM company_profile
+            WHERE code = ? AND update_time > ?
+        ''', (code, cutoff))
+        row = cursor.fetchone()
+        if row:
+            return {
+                'industry': row[0],
+                'business_scope': row[1],
+                'pb': row[2],
+                'total_market_cap': row[3],
+                'float_market_cap': row[4],
+                'update_time': row[5]
+            }
+        return None
+
+    # ── 股票新闻 ──────────────────────────────────────────────────────
+
+    def save_stock_news(self, code: str, news_list: list):
+        """保存股票新闻（JSON 序列化）"""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            INSERT OR REPLACE INTO stock_news (code, news_json, update_time)
+            VALUES (?, ?, ?)
+        ''', (code, json.dumps(news_list, ensure_ascii=False), datetime.now()))
+        self.conn.commit()
+
+    def get_stock_news(self, code: str, max_age_hours: int = 2) -> Optional[list]:
+        """获取股票新闻缓存"""
+        cursor = self.conn.cursor()
+        cutoff = datetime.now() - timedelta(hours=max_age_hours)
+        cursor.execute('''
+            SELECT news_json FROM stock_news
+            WHERE code = ? AND update_time > ?
+        ''', (code, cutoff))
+        row = cursor.fetchone()
+        if row:
+            return json.loads(row[0])
         return None
 
     def close(self):

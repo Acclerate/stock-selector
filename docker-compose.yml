@@ -6,8 +6,9 @@ services:
     env_file:
       - .env
     volumes:
-      - stock-cache:/app/data
+      # 代码目录 bind mount — 改代码立即生效，无需 rebuild
+      - ./app:/app/app
+      - ./data:/app/data
+      - ./selectors:/app/selectors
+      - ./utils:/app/utils
     restart: unless-stopped
-
-volumes:
-  stock-cache:

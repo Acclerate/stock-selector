@@ -162,8 +162,14 @@ class EnhancedLongTermSelector:
             }
             
             # ====== 7. 资金流评分 (10分) ======
-            _log("资金流评分(cache)...")
-            fund_flow = self.cache.get_fund_flow(code)
+            _log("资金流评分...")
+            try:
+                from fund_flow_fetcher import FundFlowFetcher
+                if not hasattr(self, '_fund_fetcher'):
+                    self._fund_fetcher = FundFlowFetcher(cache=self.cache)
+                fund_flow = self._fund_fetcher.fetch_and_save(code)
+            except Exception:
+                fund_flow = self.cache.get_fund_flow(code)
             fund_score = 10 if fund_flow and fund_flow.get('main_in', 0) > 0 else 0
             score += fund_score
             

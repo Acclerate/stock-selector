@@ -189,28 +189,81 @@ def api_gpt_analyze():
     stocks_data = []
     for s in stocks:
         det = s.get('details') or {}
+        trend = det.get('trend') or {}
+        momentum = det.get('momentum') or {}
+        volume = det.get('volume') or {}
+        strength = det.get('strength') or {}
+        volatility = det.get('volatility') or {}
+        bias = det.get('bias') or {}
         ff  = det.get('fund_flow') or {}
         trade = det.get('trade_points') or {}
+        rsi_det = det.get('rsi') or {}
+        kdj_det = det.get('kdj') or {}
+        macd_det = det.get('macd') or {}
+        boll_det = det.get('bollinger') or {}
+
         entry = {
             'code':       s.get('code'),
             'name':       s.get('name'),
             'price':      s.get('price'),
             'change_pct': s.get('change_pct'),
+            # 完整技术指标
             'tech_indicators': {
-                'ma20':        (det.get('trend') or {}).get('ma20'),
-                'ma60':        (det.get('trend') or {}).get('ma60'),
-                'short_score': s.get('score'),
-                'long_score':  s.get('score'),
-                'adx':         (det.get('strength') or {}).get('adx'),
-                'atr':         trade.get('atr'),
+                'ma5':          trend.get('ma5') or (det.get('ma') or {}).get('ma5'),
+                'ma10':         trend.get('ma10') or (det.get('ma') or {}).get('ma10'),
+                'ma20':         trend.get('ma20'),
+                'ma60':         trend.get('ma60'),
+                'rsi':          rsi_det.get('value') or (det.get('rsi') or {}).get('value'),
+                'macd':         macd_det.get('macd_hist'),
+                'dif':          macd_det.get('dif'),
+                'dea':          macd_det.get('dea'),
+                'kdj_k':        kdj_det.get('k'),
+                'kdj_d':        kdj_det.get('d'),
+                'kdj_j':        kdj_det.get('j'),
+                'boll_upper':   boll_det.get('upper'),
+                'boll_mid':     boll_det.get('middle'),
+                'boll_lower':   boll_det.get('lower'),
+                'atr':          trade.get('atr'),
+                'adx':          strength.get('adx'),
+                'short_score':  s.get('score'),
+                'long_score':   s.get('score'),
             },
+            # 趋势详情
+            'trend': {
+                'rating':     trend.get('rating'),
+                'reasons':    trend.get('reasons', []),
+            },
+            # 动量
+            'momentum': {
+                'returns_5d':  momentum.get('returns_5d'),
+                'returns_20d': momentum.get('returns_20d'),
+            },
+            # 量能
+            'volume': {
+                'obv_trend':    volume.get('obv_trend'),
+                'volume_ratio': volume.get('volume_ratio'),
+            },
+            # 波动率
+            'volatility': {
+                'value':       volatility.get('value'),
+                'rating':      volatility.get('rating'),
+            },
+            # 乖离率
+            'bias': {
+                'bias_20':     bias.get('bias_20'),
+                'bias_60':     bias.get('bias_60'),
+            },
+            # 资金流
             'fund_flow': {
-                'main_net_inflow': ff.get('main_in'),
+                'main_net_inflow':     ff.get('main_in'),
+                'main_net_inflow_pct': ff.get('main_ratio'),
+                'signal':              ff.get('signal'),
             },
             # 选股专属字段
             'selector_score':       s.get('score'),
             'selector_rating':      s.get('rating'),
             'buy_signals':          s.get('buy_signals', []),
+            'sell_signals':         s.get('sell_signals', []),
             'stop_loss':            s.get('stop_loss'),
             'take_profit':          s.get('take_profit'),
             'stop_loss_pct':        s.get('stop_loss_pct'),
@@ -219,11 +272,78 @@ def api_gpt_analyze():
         }
         stocks_data.append(entry)
 
-    sentiment = {
-        'score': None,
-        'level': '未知',
-        'description': '本次分析来自选股引擎，无实时市场情绪评分',
-    }
+    # ── 丰富数据：公司画像、详细资金流、新闻、扩展基本面 ──────────
+    from stock_cache_db import StockCache
+    _enrich_cache = StockCache()
+    try:
+        from fundamental_data import FundamentalData
+        from fund_flow_fetcher import FundFlowFetcher
+        _fd = FundamentalData(cache=_enrich_cache)
+        _ff = FundFlowFetcher(cache=_enrich_cache)
+
+        for entry in stocks_data:
+            code = entry.get('code', '')
+            # 1. 公司画像（行业、经营范围）
+            try:
+                profile = _fd.get_company_profile(code)
+                if profile and profile.get('industry'):
+                    entry['company_profile'] = {
+                        'industry': profile.get('industry', ''),
+                        'business_scope': profile.get('business_scope', ''),
+                        'pb_ratio': profile.get('pb', 0),
+                        'total_market_cap': profile.get('total_market_cap', 0),
+                    }
+            except Exception:
+                pass
+            # 2. 详细资金流（超大单/大单/中单/小单）
+            try:
+                flow = _ff.fetch_and_save(code)
+                if flow and flow.get('main_in'):
+                    entry['fund_flow'].update({
+                        'super_large_net': flow.get('super_large_net', 0),
+                        'large_net': flow.get('large_net', 0),
+                        'medium_net': flow.get('medium_net', 0),
+                        'small_net': flow.get('small_net', 0),
+                        'days_continuous': flow.get('days_continuous', 0),
+                    })
+            except Exception:
+                pass
+            # 3. 最近新闻
+            try:
+                news = _fd.get_stock_news(code)
+                if news:
+                    entry['recent_news'] = news
+            except Exception:
+                pass
+            # 4. 扩展基本面（毛利率、净利率、负债率）
+            try:
+                fund = _fd.get_stock_fundamental(code)
+                if fund:
+                    entry['fundamental'] = {
+                        'roe': fund.get('roe', 0),
+                        'pe': fund.get('pe', 0),
+                        'pb': fund.get('pb', 0),
+                        'gross_margin': fund.get('gross_margin', 0),
+                        'net_margin': fund.get('net_margin', 0),
+                        'debt_to_asset': fund.get('debt_to_asset', 0),
+                        'profit_growth': fund.get('profit_growth', 0),
+                        'dividend_yield': fund.get('dividend_yield', 0),
+                    }
+            except Exception:
+                pass
+    except Exception:
+        pass
+    finally:
+        _enrich_cache.close()
+
+    # 获取市场情绪数据
+    sentiment = {'score': None, 'level': '未知', 'description': ''}
+    try:
+        from market_sentiment import MarketSentiment
+        ms = MarketSentiment()
+        sentiment = ms.calculate()
+    except Exception:
+        pass
 
     use_stream = bool(data.get('stream', False))
 

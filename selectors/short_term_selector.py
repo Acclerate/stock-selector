@@ -285,8 +285,14 @@ class ShortTermSelector:
             }
 
             # ====== 6. 资金流向 (15分) ======
-            _log("资金流评分(cache)...")
-            fund_flow = self.cache.get_fund_flow(code)
+            _log("资金流评分...")
+            try:
+                from fund_flow_fetcher import FundFlowFetcher
+                if not hasattr(self, '_fund_fetcher'):
+                    self._fund_fetcher = FundFlowFetcher(cache=self.cache)
+                fund_flow = self._fund_fetcher.fetch_and_save(code)
+            except Exception:
+                fund_flow = self.cache.get_fund_flow(code)
 
             fund_score = 0
             fund_signal = None
