@@ -11,4 +11,4 @@ services:
       - ./data:/app/data
       - ./selectors:/app/selectors
       - ./utils:/app/utils
-    restart: unless-stopped
+    restart: "no"
