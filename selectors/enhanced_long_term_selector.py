@@ -432,6 +432,72 @@ class EnhancedLongTermSelector:
         
         return top_stocks
     
+    def generate_report(self, stocks: List[Dict]) -> str:
+        """生成增强版推荐报告"""
+        report = []
+        report.append("=" * 60)
+        report.append(f"📊 增强版中长线选股报告")
+        report.append(f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        report.append(f"评分体系: 趋势(30)+动量(15)+量能(15)+ADX(10)+波动(10)+乖离(10)+资金(10)+基本面(30)+估值(15)+DMI(15)")
+        report.append("=" * 60)
+        report.append("")
+
+        for i, stock in enumerate(stocks, 1):
+            report.append(f"{i}. {stock['name']} ({stock['code']})")
+            report.append(f"   评级: {stock['rating']} | 评分: {stock['score']:.1f}/100")
+            report.append(f"   价格: ¥{stock['price']:.2f} ({stock['change_pct']:+.2f}%)")
+            report.append("")
+
+            details = stock['details']
+
+            # 技术面
+            report.append("   📈 技术面:")
+            trend = details.get('trend', {})
+            report.append(f"      趋势: {trend.get('rating', 'N/A')} ({trend.get('score', 0):.1f}/30)")
+            momentum = details.get('momentum', {})
+            report.append(f"      动量: 5日{momentum.get('returns_5d', 0):+.2f}% | 20日{momentum.get('returns_20d', 0):+.2f}%")
+            volume = details.get('volume', {})
+            report.append(f"      量能: {volume.get('obv_trend', 'N/A')} | 量比{volume.get('volume_ratio', 0):.2f}")
+            strength = details.get('strength', {})
+            report.append(f"      强度: ADX={strength.get('adx', 0):.1f}")
+            report.append("")
+
+            # 基本面
+            fund = details.get('fundamental', {})
+            report.append("   📋 基本面:")
+            report.append(f"      ROE: {fund.get('roe', 0):.1f}% | 利润增长: {fund.get('profit_growth', 0):+.1f}% | 股息率: {fund.get('dividend_yield', 0):.2f}%")
+            report.append("")
+
+            # 估值
+            val = details.get('valuation', {})
+            report.append("   💎 估值:")
+            if val.get('peg'):
+                report.append(f"      PE={val.get('pe', 0):.1f} | PEG={val.get('peg', 0):.2f} ({val.get('level', 'N/A')})")
+            else:
+                report.append(f"      PE={val.get('pe', 0):.1f} | PEG=不适用")
+            report.append("")
+
+            # 资金面
+            fund_flow = details.get('fund_flow', {})
+            report.append("   💰 资金面:")
+            report.append(f"      主力: {fund_flow.get('main_in', 0):+.0f}万")
+            report.append("")
+
+            # 推荐理由
+            report.append("   ✅ 推荐理由:")
+            for reason in trend.get('reasons', [])[:3]:
+                report.append(f"      • {reason}")
+
+            # 信号
+            sig = stock.get('signal', {})
+            if sig:
+                report.append(f"   📌 信号: {sig.get('decision', 'N/A')} ({sig.get('buy_count', 0)}个买点)")
+            report.append("")
+            report.append("-" * 60)
+            report.append("")
+
+        return "\n".join(report)
+
     def close(self):
         self.ds.close()
         self.cache.close()

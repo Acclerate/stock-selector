@@ -201,8 +201,8 @@
       <label>推荐数量</label>
       <input type="number" id="top-n" value="5" min="1" max="20" style="width:64px">
       <button onclick="runSelector()">▶ 运行</button>
-      <button class="secondary" onclick="getReport()">📄 报告</button>
-      <button class="secondary" onclick="runGptAnalyze()" id="gpt-btn">🤖 GPT分析</button>
+      <button class="secondary" onclick="getReport()">📄 导出报告</button>
+      <button class="secondary" onclick="runGptAnalyze()" id="gpt-btn">🤖 {{ llm_display_name }} 分析</button>
     </div>
     <div id="status"></div>
     <table id="results-table" style="display:none">
@@ -214,15 +214,9 @@
     </table>
   </div>
 
-  <!-- 文字报告 -->
-  <div class="card" id="report-card" style="display:none;margin-bottom:20px">
-    <h3>📝 选股报告</h3>
-    <pre id="report"></pre>
-  </div>
-
   <!-- GPT 深度研报 -->
   <div class="card" id="gpt-card" style="display:none;margin-bottom:20px">
-    <h3>🤖 GPT-4.1 深度研报</h3>
+    <h3>🤖 {{ llm_display_name }} 深度研报</h3>
     <pre id="gpt-report" style="white-space:pre-wrap;line-height:1.7;font-size:.87rem;color:#5a4a72"></pre>
   </div>
 
@@ -233,8 +227,8 @@
       <ol class="step-list">
         <li>从下拉框选择策略类型：<span class="tag tag-short">短线</span><span class="tag tag-long">中长线</span><span class="tag tag-enh">增强版</span>，填写推荐数量（默认5只）。</li>
         <li>点击 <strong>▶ 运行</strong>，系统自动扫描沪深300成分股（约250只主板蓝筹），根据历史K线计算技术指标并评分，完成后显示评分最高的 N 只。</li>
-        <li>点击 <strong>📄 报告</strong>，生成本次选股的文字摘要，包含每只股票的信号说明和操作建议。</li>
-        <li>点击 <strong>🤖 GPT分析</strong>，将选股结果交给 GPT-4.1 生成深度研报，包含产业逻辑、三情景价格、买入/止损/止盈建议，支持流式实时输出。</li>
+        <li>点击 <strong>📄 导出报告</strong>，生成 Markdown 格式的选股报告并下载，文件名包含时间戳。</li>
+        <li>点击 <strong>🤖 {{ llm_display_name }} 分析</strong>，将选股结果交给 {{ llm_display_name }} 生成深度研报，包含产业逻辑、三情景价格、买入/止损/止盈建议，支持流式实时输出。</li>
         <li>表格中的<strong>买入价 / 止损价 / 止盈价</strong>均由 ATR 动态计算（止损 = 现价 − 2×ATR，止盈 = 现价 + 3×ATR），仅供参考，不构成投资建议。</li>
       </ol>
       <div class="info-grid" style="margin-top:16px">
@@ -312,6 +306,7 @@
 
 <script>
 let lastResults = [];
+const _llmName=document.getElementById('gpt-btn').textContent.replace(/^🤖\s*/,'').replace(/\s*分析$/,'');
 
 // ── 市场情绪 ────────────────────────────────────────────────────────────────
 async function loadSentiment() {
@@ -408,7 +403,6 @@ async function runSelector(){
   const top_n=parseInt(document.getElementById('top-n').value)||5;
   document.getElementById('status').textContent='⏳ 选股中，请稍候…';
   document.getElementById('results-table').style.display='none';
-  document.getElementById('report-card').style.display='none';
   lastResults=[];
 
   const r=await fetch('/api/selector/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type,top_n})});
@@ -433,13 +427,26 @@ async function runSelector(){
 }
 
 async function getReport(){
-  if(!lastResults.length){alert('请先运行选股');return;}
-  const type=document.getElementById('sel-type').value;
-  const r=await fetch('/api/selector/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type,stocks:lastResults})});
-  const d=await r.json();
-  if(d.status!=='success'){alert(d.message);return;}
-  document.getElementById('report').textContent=d.report;
-  document.getElementById('report-card').style.display='';
+  const pre=document.getElementById('gpt-report');
+  const content=(pre.textContent||'').trim();
+  if(!content){alert('请先运行 GPT 分析生成深度研报');return;}
+  const selEl=document.getElementById('sel-type');
+  const strategyLabel=selEl.options[selEl.selectedIndex].text.replace(/（.+/,'');
+  const now=new Date();
+  const pad=n=>String(n).padStart(2,'0');
+  const dateStr=now.getFullYear()+'-'+pad(now.getMonth()+1)+'-'+pad(now.getDate())+' '+pad(now.getHours())+':'+pad(now.getMinutes())+':'+pad(now.getSeconds());
+  const ts=now.getFullYear()+''+pad(now.getMonth()+1)+''+pad(now.getDate())+'_'+pad(now.getHours())+pad(now.getMinutes())+pad(now.getSeconds());
+  const header='# '+strategyLabel+'深度研报\n\n> 生成时间：'+dateStr+'\n> 策略类型：'+selEl.options[selEl.selectedIndex].text+'\n> 推荐股票：'+lastResults.map(s=>s.name+'('+s.code+')').join('、')+'\n\n---\n\n';
+  const filename=strategyLabel+'深度研报_'+ts+'.md';
+  const blob=new Blob([header+content],{type:'text/markdown;charset=utf-8'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.style.display='none';
+  a.href=url;
+  a.download=filename;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(()=>{document.body.removeChild(a);URL.revokeObjectURL(url);},100);
 }
 
 async function runGptAnalyze(){
@@ -447,7 +454,7 @@ async function runGptAnalyze(){
   const btn=document.getElementById('gpt-btn');
   const card=document.getElementById('gpt-card');
   const pre=document.getElementById('gpt-report');
-  btn.disabled=true; btn.textContent='⏳ GPT分析中…';
+  btn.disabled=true; btn.textContent='⏳ '+_llmName+'分析中…';
   pre.textContent='';
   card.style.display='';
   card.scrollIntoView({behavior:'smooth',block:'start'});
@@ -469,7 +476,7 @@ async function runGptAnalyze(){
   }catch(e){
     pre.textContent='❌ '+e.message;
   }finally{
-    btn.disabled=false; btn.textContent='🤖 GPT分析';
+    btn.disabled=false; btn.textContent='🤖 '+_llmName+' 分析';
   }
 }
 </script>

@@ -18,7 +18,7 @@ for _sub in ('data', 'selectors', 'utils'):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from flask import Flask, render_template, jsonify, request, redirect, url_for
+from flask import Flask, render_template, jsonify, request, redirect, url_for, Response
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 
 app = Flask(__name__)
@@ -72,7 +72,10 @@ from config import WEB_HOST, WEB_PORT
 @app.route('/')
 @login_required
 def index():
-    return render_template('index.html', username=current_user.username)
+    from gpt_analyst import _resolve_model_and_backend
+    _, model_name = _resolve_model_and_backend()
+    display_name = model_name.upper() if model_name else "AI"
+    return render_template('index.html', username=current_user.username, llm_display_name=display_name)
 
 
 # ── 选股 API ─────────────────────────────────────────────────────────────────
@@ -114,11 +117,103 @@ def api_run_selector():
         return jsonify({'status': 'error', 'message': str(e)})
 
 
+def _report_to_markdown(report_text: str, stocks: list, type_label: str) -> str:
+    """将纯文本报告转换为 Markdown 格式"""
+    lines = [
+        f"# {type_label}选股报告",
+        f"",
+        f"> 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"> 推荐数量：{len(stocks)} 只",
+        f"",
+        "---",
+        "",
+    ]
+    for i, stock in enumerate(stocks, 1):
+        name = stock.get('name', '')
+        code = stock.get('code', '')
+        score = stock.get('score', 0)
+        rating = stock.get('rating', '')
+        price = stock.get('price', 0)
+        change = stock.get('change_pct', 0)
+        signal = stock.get('signal', {})
+        details = stock.get('details', {})
+
+        lines.append(f"## {i}. {name}（{code}）")
+        lines.append("")
+        lines.append(f"| 指标 | 值 |")
+        lines.append(f"|------|------|")
+        lines.append(f"| 评级 | **{rating}** |")
+        lines.append(f"| 评分 | {score:.1f} / 100 |")
+        lines.append(f"| 价格 | ¥{price:.2f}（{change:+.2f}%）|")
+        if signal:
+            lines.append(f"| 信号 | {signal.get('decision', '-')}（{signal.get('buy_count', 0)} 个买点）|")
+        lines.append("")
+
+        # 技术面
+        trend = details.get('trend', {})
+        momentum = details.get('momentum', {})
+        volume = details.get('volume', {})
+        if trend or momentum:
+            lines.append("### 技术面")
+            lines.append("")
+            if trend:
+                lines.append(f"- 趋势：{trend.get('rating', '-')}（{trend.get('score', 0):.1f}/30）")
+            if momentum:
+                lines.append(f"- 动量：5日 {momentum.get('returns_5d', 0):+.2f}% / 20日 {momentum.get('returns_20d', 0):+.2f}%")
+            if volume:
+                lines.append(f"- 量能：{volume.get('obv_trend', '-')}，量比 {volume.get('volume_ratio', 0):.2f}")
+            lines.append("")
+
+        # 基本面（增强版）
+        fund = details.get('fundamental', {})
+        if fund:
+            lines.append("### 基本面")
+            lines.append("")
+            lines.append(f"- ROE：{fund.get('roe', 0):.1f}%")
+            lines.append(f"- 利润增长：{fund.get('profit_growth', 0):+.1f}%")
+            lines.append(f"- 股息率：{fund.get('dividend_yield', 0):.2f}%")
+            lines.append("")
+
+        # 估值（增强版）
+        val = details.get('valuation', {})
+        if val:
+            lines.append("### 估值")
+            lines.append("")
+            peg_str = f"{val['peg']:.2f}" if val.get('peg') else "不适用"
+            lines.append(f"- PE：{val.get('pe', 0):.1f}")
+            lines.append(f"- PEG：{peg_str}")
+            lines.append("")
+
+        # 资金面
+        fund_flow = details.get('fund_flow', {})
+        if fund_flow:
+            lines.append("### 资金面")
+            lines.append("")
+            lines.append(f"- 主力净流入：{fund_flow.get('main_in', 0):+.0f} 万")
+            lines.append("")
+
+        # 推荐理由
+        reasons = trend.get('reasons', []) if trend else []
+        if reasons:
+            lines.append("### 推荐理由")
+            lines.append("")
+            for r in reasons[:3]:
+                lines.append(f"- {r}")
+            lines.append("")
+
+        lines.append("---")
+        lines.append("")
+
+    lines.append("")
+    lines.append("*> 本报告由量化选股系统自动生成，仅供参考，不构成投资建议。<")
+    return "\n".join(lines)
+
+
 @app.route('/api/selector/report', methods=['POST'])
 @login_required
 def api_get_selector_report():
     """
-    生成选股文字报告
+    生成选股报告并下载 Markdown 文件
     请求体: {"type": "short|long|enhanced", "stocks": [...]}
     """
     data = request.json or {}
@@ -127,6 +222,9 @@ def api_get_selector_report():
 
     if not stocks:
         return jsonify({'status': 'error', 'message': '无数据'})
+
+    type_names = {'short': '短线', 'long': '中长线', 'enhanced': '增强版'}
+    type_label = type_names.get(selector_type, '选股')
 
     try:
         if selector_type == 'short':
@@ -142,7 +240,15 @@ def api_get_selector_report():
         report = selector.generate_report(stocks)
         selector.close()
 
-        return jsonify({'status': 'success', 'report': report})
+        md_content = _report_to_markdown(report, stocks, type_label)
+
+        from urllib.parse import quote
+        filename = f"{type_label}选股报告_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+        return Response(
+            md_content,
+            mimetype='text/markdown; charset=utf-8',
+            headers={'Content-Disposition': f"attachment; filename*=UTF-8''{quote(filename)}"}
+        )
 
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)})
