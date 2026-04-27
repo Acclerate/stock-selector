@@ -14,6 +14,7 @@ from typing import List, Dict
 from smart_data_source import SmartDataSource
 from stock_cache_db import StockCache
 from advanced_indicators import AdvancedIndicators
+from short_term_indicators import ShortTermIndicators
 
 
 class LongTermSelector:
@@ -23,6 +24,7 @@ class LongTermSelector:
         self.ds = SmartDataSource()
         self.cache = StockCache()
         self.indicators = AdvancedIndicators()
+        self._sti = ShortTermIndicators()
         
     def get_index_stocks(self) -> List[str]:
         """从沪深300成分股中获取扫描范围，过滤创业板和科创板"""
@@ -35,10 +37,14 @@ class LongTermSelector:
             SCAN_INDEX = "000300"
 
         def _filter(codes):
-            return [
-                c for c in codes
-                if not c.startswith('3') and not c.startswith('688')
-            ]
+            seen = set()
+            result = []
+            for c in codes:
+                if c in seen or c.startswith('3') or c.startswith('688'):
+                    continue
+                seen.add(c)
+                result.append(c)
+            return result
 
         # 方案1: 东方财富成分股接口（稳定，无需访问中证官网）
         try:
@@ -236,7 +242,29 @@ class LongTermSelector:
                 'score': fund_score,
                 'main_in': fund_flow.get('main_in', 0) / 10000 if fund_flow else 0
             }
-            
+
+            # ====== 补充技术指标（供 AI 分析使用） ======
+            ma5 = df['close'].rolling(5).mean()
+            ma10 = df['close'].rolling(10).mean()
+            details['ma'] = {
+                'ma5': float(ma5.iloc[-1]),
+                'ma10': float(ma10.iloc[-1]),
+                'ma20': trend['ma20'],
+                'ma60': trend['ma60'],
+            }
+            rsi_s = self._sti.calc_rsi(df)
+            details['rsi'] = {'value': float(rsi_s.iloc[-1])}
+            kdj_k, kdj_d, kdj_j = self._sti.calc_kdj(df)
+            details['kdj'] = {'k': float(kdj_k.iloc[-1]), 'd': float(kdj_d.iloc[-1]), 'j': float(kdj_j.iloc[-1])}
+            dif, dea, macd_hist = self._sti.calc_macd_short(df)
+            details['macd'] = {'dif': float(dif.iloc[-1]), 'dea': float(dea.iloc[-1]), 'macd_hist': float(macd_hist.iloc[-1])}
+            boll_upper, boll_mid, boll_lower = self._sti.calc_bollinger(df)
+            details['bollinger'] = {
+                'upper': float(boll_upper.iloc[-1]),
+                'middle': float(boll_mid.iloc[-1]),
+                'lower': float(boll_lower.iloc[-1]),
+            }
+
             # ====== 8. 计算买卖点（基于ATR动态止损） ======
             current_price = float(stock_info.get('price', df['close'].iloc[-1]))
             atr_value = atr.iloc[-1]
@@ -378,7 +406,9 @@ class LongTermSelector:
         
         print(f"📊 分析 {len(stocks)} 只股票 (沪深300，已排除创业板/科创板)...")
         print()
-        
+
+        self.cache.preload_stocks(stocks)
+
         results = []
         for i, code in enumerate(stocks, 1):
             print(f"[{i}/{len(stocks)}] {code}...", flush=True)

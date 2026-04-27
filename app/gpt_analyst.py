@@ -266,7 +266,8 @@ def _build_prompt(codes: List[str], sentiment: dict, stocks_data: list) -> str:
         "```json\n"
         + json.dumps(payload, ensure_ascii=False, indent=2)
         + "\n```\n\n"
-        "请按照报告结构输出完整分析。"
+        "请按照报告结构对每只标的输出完整、详细的分析。"
+        "禁止因篇幅原因精简或省略任何章节，每只股票必须包含全部10个子节。"
     )
 
 
@@ -388,17 +389,30 @@ def _run_deepseek(model: str, user_msg: str, stream: bool):
         {"role": "system", "content": _SYSTEM_PROMPT},
         {"role": "user",   "content": user_msg},
     ]
+    print(f"[DeepSeek] model={model}, stream={stream}, msg_len={len(user_msg)}", flush=True)
     if stream:
         return _deepseek_stream(client, model, messages)
-    resp = client.chat.completions.create(model=model, messages=messages, stream=False)
+    resp = client.chat.completions.create(model=model, messages=messages, stream=False, max_tokens=16384)
     return resp.choices[0].message.content
 
 
 def _deepseek_stream(client, model: str, messages: list) -> Generator[str, None, None]:
-    resp = client.chat.completions.create(model=model, messages=messages, stream=True)
+    resp = client.chat.completions.create(model=model, messages=messages, stream=True, max_tokens=16384)
+    has_content = False
     for chunk in resp:
-        delta = chunk.choices[0].delta if chunk.choices else None
+        if not chunk.choices:
+            continue
+        delta = chunk.choices[0].delta
+        # 兼容 reasoning_content（DeepSeek-R1 等）和普通 content
+        if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
+            if not has_content:
+                yield "【思考过程】\n"
+                has_content = True
+            yield delta.reasoning_content
         if delta and delta.content:
+            if has_content:
+                yield "\n\n【分析报告】\n"
+                has_content = False
             yield delta.content
 
 

@@ -15,6 +15,7 @@ from stock_cache_db import StockCache
 from advanced_indicators import AdvancedIndicators
 from advanced_long_term_indicators import AdvancedLongTermIndicators
 from fundamental_data import FundamentalData
+from short_term_indicators import ShortTermIndicators
 
 
 class EnhancedLongTermSelector:
@@ -26,6 +27,7 @@ class EnhancedLongTermSelector:
         self.indicators = AdvancedIndicators()
         self.advanced_indicators = AdvancedLongTermIndicators()
         self.fundamental = FundamentalData(cache=self.cache)
+        self._sti = ShortTermIndicators()
         
     def get_index_stocks(self) -> List[str]:
         """从沪深300成分股中获取扫描范围，过滤创业板和科创板"""
@@ -38,10 +40,14 @@ class EnhancedLongTermSelector:
             SCAN_INDEX = "000300"
 
         def _filter(codes):
-            return [
-                c for c in codes
-                if not c.startswith('3') and not c.startswith('688')
-            ]
+            seen = set()
+            result = []
+            for c in codes:
+                if c in seen or c.startswith('3') or c.startswith('688'):
+                    continue
+                seen.add(c)
+                result.append(c)
+            return result
 
         # 方案1: 东方财富成分股接口（稳定，无需访问中证官网）
         try:
@@ -177,7 +183,29 @@ class EnhancedLongTermSelector:
                 'score': fund_score,
                 'main_in': fund_flow.get('main_in', 0) / 10000 if fund_flow else 0
             }
-            
+
+            # ====== 补充技术指标（供 AI 分析使用） ======
+            ma5 = df['close'].rolling(5).mean()
+            ma10 = df['close'].rolling(10).mean()
+            details['ma'] = {
+                'ma5': float(ma5.iloc[-1]),
+                'ma10': float(ma10.iloc[-1]),
+                'ma20': float(trend.get('ma20', 0)),
+                'ma60': float(trend.get('ma60', 0)),
+            }
+            rsi_s = self._sti.calc_rsi(df)
+            details['rsi'] = {'value': float(rsi_s.iloc[-1])}
+            kdj_k, kdj_d, kdj_j = self._sti.calc_kdj(df)
+            details['kdj'] = {'k': float(kdj_k.iloc[-1]), 'd': float(kdj_d.iloc[-1]), 'j': float(kdj_j.iloc[-1])}
+            dif, dea, macd_hist = self._sti.calc_macd_short(df)
+            details['macd'] = {'dif': float(dif.iloc[-1]), 'dea': float(dea.iloc[-1]), 'macd_hist': float(macd_hist.iloc[-1])}
+            boll_upper, boll_mid, boll_lower = self._sti.calc_bollinger(df)
+            details['bollinger'] = {
+                'upper': float(boll_upper.iloc[-1]),
+                'middle': float(boll_mid.iloc[-1]),
+                'lower': float(boll_lower.iloc[-1]),
+            }
+
             # ====== 综合信号评分 ✨新增 ======
             _log("综合信号评分...")
             signals = {
@@ -387,7 +415,9 @@ class EnhancedLongTermSelector:
         
         print(f"📊 分析 {len(stocks)} 只股票（沪深300，含基本面分析）...")
         print()
-        
+
+        self.cache.preload_stocks(stocks)
+
         results = []
         for i, code in enumerate(stocks, 1):
             print(f"[{i}/{len(stocks)}] {code}...", flush=True)

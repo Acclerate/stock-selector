@@ -168,7 +168,203 @@ class StockCache:
             ))
         
         self.conn.commit()
-    
+
+    def preload_stocks(self, codes: list, max_age_minutes: int = 30):
+        """批量预加载：先查缓存缺失，再用多数据源批量拉取写入"""
+        if not codes:
+            return
+        cutoff = datetime.now() - timedelta(minutes=max_age_minutes)
+        cursor = self.conn.cursor()
+        placeholders = ','.join(['?'] * len(codes))
+        cursor.execute(f'SELECT code FROM stocks WHERE code IN ({placeholders}) AND update_time > ?',
+                       codes + [cutoff])
+        cached = {row[0] for row in cursor.fetchall()}
+        missing = [c for c in codes if c not in cached]
+        if not missing:
+            return
+        print(f"📦 批量预加载 {len(missing)} 只股票行情...", flush=True)
+        still_missing = list(missing)
+
+        # 方案0: 掘金 SDK（最高优先级，不依赖 HTTP）
+        try:
+            from diggold_source import DiggoldSource
+            if DiggoldSource.is_available():
+                dg = DiggoldSource()
+                results = dg.get_realtime_batch(still_missing)
+                if results:
+                    self.save_stocks(results)
+                    print(f"  掘金获取 {len(results)} 只", flush=True)
+                # 重新检查缺失
+                cutoff2 = datetime.now() - timedelta(minutes=max_age_minutes)
+                cursor.execute(f'SELECT code FROM stocks WHERE code IN ({placeholders}) AND update_time > ?',
+                               codes + [cutoff2])
+                cached2 = {row[0] for row in cursor.fetchall()}
+                still_missing = [c for c in missing if c not in cached2]
+        except Exception as e:
+            print(f"  ⚠️ 掘金预加载失败: {e}", flush=True)
+
+        if not still_missing:
+            print(f"✅ 预加载完成，缓存 {len(codes)}/{len(codes)} 只", flush=True)
+            return
+
+        # 方案1: 新浪批量（每批50只）
+        try:
+            import requests as _req
+            fetched = 0
+            for i in range(0, len(still_missing), 50):
+                batch = still_missing[i:i+50]
+                symbols = [('sh' if c.startswith('6') else 'sz') + c for c in batch]
+                url = f'http://hq.sinajs.cn/list={",".join(symbols)}'
+                resp = _req.get(url, timeout=5)
+                if resp.status_code != 200:
+                    continue
+                results = []
+                lines = resp.text.strip().split('\n')
+                for j, line in enumerate(lines):
+                    if 'var hq_str_' not in line or j >= len(batch):
+                        continue
+                    try:
+                        data_str = line.split('"')[1]
+                        fields = data_str.split(',')
+                        if len(fields) < 32:
+                            continue
+                        price = float(fields[3])
+                        prev_close = float(fields[2])
+                        change_pct = ((price - prev_close) / prev_close) * 100 if prev_close else 0
+                        results.append({
+                            'code': batch[j],
+                            'name': fields[0],
+                            'price': price,
+                            'change_pct': round(change_pct, 2),
+                            'volume': float(fields[8]),
+                            'amount': float(fields[9]),
+                        })
+                    except Exception:
+                        continue
+                if results:
+                    self.save_stocks(results)
+                    fetched += len(results)
+                import time
+                if i + 50 < len(still_missing):
+                    time.sleep(0.2)
+            if fetched:
+                print(f"  新浪批量获取 {fetched} 只", flush=True)
+                # 重新检查缺失
+                cutoff2 = datetime.now() - timedelta(minutes=max_age_minutes)
+                cursor.execute(f'SELECT code FROM stocks WHERE code IN ({placeholders}) AND update_time > ?',
+                               codes + [cutoff2])
+                cached2 = {row[0] for row in cursor.fetchall()}
+                still_missing = [c for c in missing if c not in cached2]
+        except Exception as e:
+            print(f"  ⚠️ 新浪批量失败: {e}", flush=True)
+
+        # 方案2: 腾讯逐个兜底
+        if still_missing:
+            print(f"  腾讯兜底获取 {len(still_missing)} 只...", flush=True)
+            fetched2 = 0
+            for code in still_missing:
+                data = self._fetch_tencent_realtime(code)
+                if data:
+                    self.save_stocks([data])
+                    fetched2 += 1
+                import time
+                time.sleep(0.05)
+            if fetched2:
+                print(f"  腾讯获取 {fetched2} 只", flush=True)
+
+        # 补填空名称：检查 name 为空的记录，用新浪批量补填
+        cursor.execute(
+            f'SELECT code FROM stocks WHERE code IN ({placeholders}) AND update_time > ? AND (name IS NULL OR name = "" OR name = "-")',
+            codes + [datetime.now() - timedelta(minutes=max_age_minutes)]
+        )
+        no_name_codes = [row[0] for row in cursor.fetchall()]
+        if no_name_codes:
+            print(f"  补填 {len(no_name_codes)} 只股票名称...", flush=True)
+            self._backfill_names(no_name_codes, cursor)
+
+        # 统计
+        cutoff3 = datetime.now() - timedelta(minutes=max_age_minutes)
+        cursor.execute(f'SELECT COUNT(*) FROM stocks WHERE code IN ({placeholders}) AND update_time > ?',
+                       codes + [cutoff3])
+        total = cursor.fetchone()[0]
+        print(f"✅ 预加载完成，缓存 {total}/{len(codes)} 只", flush=True)
+
+    def _backfill_names(self, codes: list, cursor):
+        """用新浪批量接口补填股票名称"""
+        try:
+            import requests as _req
+            filled = 0
+            for i in range(0, len(codes), 50):
+                batch = codes[i:i+50]
+                symbols = [('sh' if c.startswith('6') else 'sz') + c for c in batch]
+                url = f'http://hq.sinajs.cn/list={",".join(symbols)}'
+                resp = _req.get(url, timeout=5)
+                if resp.status_code != 200:
+                    continue
+                lines = resp.text.strip().split('\n')
+                for j, line in enumerate(lines):
+                    if 'var hq_str_' not in line or j >= len(batch):
+                        continue
+                    try:
+                        data_str = line.split('"')[1]
+                        name = data_str.split(',')[0]
+                        if name:
+                            cursor.execute('UPDATE stocks SET name = ? WHERE code = ?', (name, batch[j]))
+                            filled += 1
+                    except Exception:
+                        continue
+                self.conn.commit()
+                import time
+                if i + 50 < len(codes):
+                    time.sleep(0.2)
+            if filled:
+                print(f"  新浪补填名称 {filled} 只", flush=True)
+        except Exception as e:
+            print(f"  ⚠️ 补填名称失败: {e}", flush=True)
+
+    def _fetch_tencent_realtime(self, code: str) -> Optional[Dict]:
+        """腾讯实时行情（fqkline）"""
+        try:
+            import urllib.request, urllib.parse, json as _json
+            symbol = 'sh' + code if code.startswith('6') else 'sz' + code
+            url = 'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?' + urllib.parse.urlencode({
+                'param': f'{symbol},day,,,2,qfq'
+            })
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                obj = _json.loads(resp.read().decode('utf-8', 'ignore'))
+            data = obj.get('data', {}).get(symbol, {})
+            rows = data.get('qfqday') or data.get('day') or []
+            if not rows:
+                return None
+            r = rows[-1]
+            prev = rows[-2] if len(rows) >= 2 else r
+            price = float(r[2])
+            prev_close = float(prev[2])
+            change_pct = round((price - prev_close) / prev_close * 100, 2) if prev_close else 0.0
+            return {
+                'code': code,
+                'name': '',
+                'price': price,
+                'change_pct': change_pct,
+                'volume': float(r[5]),
+                'amount': 0,
+            }
+        except Exception:
+            return None
+
+    def _fetch_diggold_realtime(self, code: str) -> Optional[Dict]:
+        """掘金 SDK 获取单只行情"""
+        try:
+            from diggold_source import DiggoldSource
+            if not DiggoldSource.is_available():
+                return None
+            if not hasattr(self, '_dg_instance'):
+                self._dg_instance = DiggoldSource()
+            return self._dg_instance.get_realtime_quote(code)
+        except Exception:
+            return None
+
     def get_stock(self, code: str, max_age_minutes: int = 30) -> Optional[Dict]:
         """获取单只股票数据，max_age_minutes 内的缓存有效"""
         cursor = self.conn.cursor()
@@ -187,8 +383,12 @@ class StockCache:
                 'update_time': row[6]
             }
 
-        # 缓存 miss：实时拉取并写入缓存
-        data = self._fetch_realtime(code)
+        # 缓存 miss：实时拉取并写入缓存（掘金→东方财富→腾讯）
+        data = self._fetch_diggold_realtime(code)
+        if not data:
+            data = self._fetch_realtime(code)
+        if not data:
+            data = self._fetch_tencent_realtime(code)
         if data:
             self.save_stocks([data])
             return data

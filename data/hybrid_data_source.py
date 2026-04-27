@@ -41,7 +41,16 @@ class HybridDataSource:
         # SQLite 持久化缓存（跨进程复用当天K线）
         self._db_cache = StockCache()
 
-        # 初始化东方财富 API（用于实时行情，HTTP已不通，仅作对象占位）
+        # 初始化掘金数据源（最高优先级）
+        self._diggold = None
+        try:
+            from diggold_source import DiggoldSource
+            if DiggoldSource.is_available():
+                self._diggold = DiggoldSource()
+        except Exception:
+            pass
+
+        # 初始化东方财富 API
         try:
             import sys, os as _os
             _data_dir = _os.path.dirname(_os.path.abspath(__file__))
@@ -49,10 +58,11 @@ class HybridDataSource:
                 sys.path.insert(0, _data_dir)
             from eastmoney_api import EastMoneyAPI
             self._em = EastMoneyAPI(timeout=5)
-        except Exception as _e:
+        except Exception:
             self._em = None
 
         # 尝试初始化Tushare
+        dg = '掘金→' if self._diggold else ''
         if tushare_token:
             try:
                 import tushare as ts
@@ -60,12 +70,12 @@ class HybridDataSource:
                 self.pro = ts.pro_api()
                 self.pro.trade_cal(exchange='SSE', start_date='20260101', end_date='20260101')
                 self.tushare_available = True
-                print("数据源: 实时行情=东方财富→腾讯→新浪  历史K线=Tushare(主)→腾讯→akshare", flush=True)
+                print(f"数据源: 实时行情={dg}东方财富→腾讯→新浪  历史K线={dg}Tushare→腾讯→akshare", flush=True)
             except Exception as e:
-                print(f"⚠️ Tushare 连接失败({e})，历史K线将使用 腾讯→akshare", flush=True)
-                print("数据源: 实时行情=东方财富→腾讯→新浪  历史K线=腾讯→akshare", flush=True)
+                print(f"⚠️ Tushare 连接失败({e})", flush=True)
+                print(f"数据源: 实时行情={dg}东方财富→腾讯→新浪  历史K线={dg}腾讯→akshare", flush=True)
         else:
-            print("数据源: 实时行情=东方财富→腾讯→新浪  历史K线=腾讯→akshare", flush=True)
+            print(f"数据源: 实时行情={dg}东方财富→腾讯→新浪  历史K线={dg}腾讯→akshare", flush=True)
     
     def get_realtime_price(self, code: str) -> Optional[Dict]:
         """
@@ -93,7 +103,12 @@ class HybridDataSource:
             is_trading = (morning_start <= current_time <= morning_end) or \
                         (afternoon_start <= current_time <= afternoon_end)
         
-        # 优先级：东方财富 > 腾讯 > 新浪 > akshare（全时段均适用）
+        # 优先级：掘金 > 东方财富 > 腾讯 > 新浪 > akshare
+        if self._diggold:
+            result = self._diggold.get_realtime_quote(code)
+            if result:
+                return result
+
         if self._em:
             result = self._get_eastmoney_realtime(code)
             if result:
@@ -138,7 +153,16 @@ class HybridDataSource:
             is_trading = (morning_start <= current_time <= morning_end) or \
                         (afternoon_start <= current_time <= afternoon_end)
         
-        # 优先东方财富批量（速度快）
+        # 优先掘金批量
+        if self._diggold:
+            try:
+                dg_results = self._diggold.get_realtime_batch(codes)
+                if dg_results and len(dg_results) > 0:
+                    return dg_results
+            except Exception:
+                pass
+
+        # 东方财富批量
         if self._em:
             try:
                 em_results = self._get_eastmoney_batch(codes)
@@ -163,7 +187,7 @@ class HybridDataSource:
     
     def get_history_data(self, code: str, days: int = 120) -> Optional[pd.DataFrame]:
         """
-        获取历史数据（优先级：Tushare > 东方财富 > akshare）
+        获取历史数据（优先级：掘金 > Tushare > 东方财富 > akshare）
         同一天内相同 (code, days) 的请求直接返回内存缓存，无需重复抓取。
 
         Args:
@@ -184,6 +208,14 @@ class HybridDataSource:
         if db_result is not None and not db_result.empty:
             self._history_cache[cache_key] = (today, db_result)
             return db_result.copy()
+
+        # 方案0: 掘金 SDK（最高优先级，不依赖 HTTP）
+        if self._diggold:
+            result = self._diggold.get_history_kline(code, days)
+            if result is not None and not result.empty:
+                self._history_cache[cache_key] = (today, result)
+                self._db_cache.save_history_kline(code, days, result)
+                return result
 
         # 方案1: Tushare（推荐，数据质量高）
         if self.tushare_available:

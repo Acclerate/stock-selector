@@ -49,10 +49,14 @@ class ShortTermSelector:
             SCAN_INDEX = "000300"
 
         def _filter(codes):
-            return [
-                c for c in codes
-                if not c.startswith('3') and not c.startswith('688')
-            ]
+            seen = set()
+            result = []
+            for c in codes:
+                if c in seen or c.startswith('3') or c.startswith('688'):
+                    continue
+                seen.add(c)
+                result.append(c)
+            return result
 
         # 方案1: 东方财富成分股接口（稳定，无需访问中证官网）
         try:
@@ -447,7 +451,9 @@ class ShortTermSelector:
         
         print(f"📊 分析 {len(stocks)} 只股票 (沪深300，已排除创业板/科创板)...")
         print()
-        
+
+        self.cache.preload_stocks(stocks)
+
         results = []
         for i, code in enumerate(stocks, 1):
             print(f"[{i}/{len(stocks)}] {code}...", flush=True)

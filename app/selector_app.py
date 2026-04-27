@@ -254,6 +254,78 @@ def api_get_selector_report():
         return jsonify({'status': 'error', 'message': str(e)})
 
 
+def _calc_market_sentiment() -> dict:
+    """获取市场情绪数据，优先用 MarketSentiment 模块，否则从缓存快速估算。"""
+    try:
+        from market_sentiment import MarketSentiment
+        ms = MarketSentiment()
+        return ms.calculate()
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    # 备用：从 SQLite 缓存快速估算
+    try:
+        from stock_cache_db import StockCache
+        cache = StockCache()
+        conn = cache.conn
+        cursor = conn.cursor()
+        from datetime import date as _date
+        today = _date.today().isoformat()
+        cursor.execute(
+            "SELECT change_pct, price FROM stocks WHERE date(update_time)=? AND price>0",
+            (today,)
+        )
+        rows = cursor.fetchall()
+        cache.close()
+
+        if len(rows) < 50:
+            return {'score': None, 'level': '数据不足',
+                    'description': f'缓存仅 {len(rows)} 条，建议先运行选股', 'dimensions': {}}
+
+        changes = [r[0] for r in rows if r[0] is not None]
+        up = sum(1 for c in changes if c > 0)
+        down = sum(1 for c in changes if c < 0)
+        total = len(changes)
+        limit_up = sum(1 for c in changes if c >= 9.9)
+
+        up_ratio = up / total
+        avg_change = sum(changes) / total
+        limit_up_rate = limit_up / total
+        strong_ratio = sum(1 for c in changes if c >= 3) / total
+
+        score = (
+            up_ratio * 30 +
+            min(max(avg_change / 5, 0), 1) * 20 +
+            min(limit_up_rate / 0.03, 1) * 20 +
+            min(strong_ratio / 0.15, 1) * 15 +
+            15
+        )
+        score = round(min(max(score, 0), 100), 1)
+
+        if score >= 75: level = '极度乐观'
+        elif score >= 60: level = '乐观'
+        elif score >= 50: level = '中性偏多'
+        elif score >= 40: level = '中性偏空'
+        elif score >= 25: level = '悲观'
+        else: level = '极度悲观'
+
+        return {
+            'score': score, 'level': level,
+            'description': f'涨跌比 {up}:{down}，均涨幅 {avg_change:.2f}%，涨停 {limit_up} 只',
+            'dimensions': {
+                '涨跌比': round(up_ratio * 100, 1),
+                '均涨幅': round(avg_change, 2),
+                '涨停率%': round(limit_up_rate * 100, 2),
+                '强势股比%': round(strong_ratio * 100, 1),
+                '样本数': total,
+            }
+        }
+    except Exception:
+        return {'score': None, 'level': '未知', 'description': '', 'dimensions': {}}
+
+
 # ── GPT 深度分析 API ──────────────────────────────────────────────────────────
 @app.route('/api/selector/gpt-analyze', methods=['POST'])
 @login_required
@@ -443,13 +515,7 @@ def api_gpt_analyze():
         _enrich_cache.close()
 
     # 获取市场情绪数据
-    sentiment = {'score': None, 'level': '未知', 'description': ''}
-    try:
-        from market_sentiment import MarketSentiment
-        ms = MarketSentiment()
-        sentiment = ms.calculate()
-    except Exception:
-        pass
+    sentiment = _calc_market_sentiment()
 
     use_stream = bool(data.get('stream', False))
 
@@ -457,8 +523,13 @@ def api_gpt_analyze():
         from gpt_analyst import run_analysis
         if use_stream:
             def generate():
-                for chunk in run_analysis(codes, sentiment, stocks_data, stream=True):
-                    yield chunk
+                try:
+                    for chunk in run_analysis(codes, sentiment, stocks_data, stream=True):
+                        yield chunk
+                except Exception as e:
+                    import traceback
+                    traceback.print_exc()
+                    yield f'\n\n❌ 分析出错: {e}'
             return Response(stream_with_context(generate()), content_type='text/plain; charset=utf-8')
         else:
             report = run_analysis(codes, sentiment, stocks_data, stream=False)
@@ -473,85 +544,10 @@ def api_gpt_analyze():
 @app.route('/api/market/sentiment', methods=['GET'])
 @login_required
 def api_market_sentiment():
-    """
-    7维市场情绪评分。
-    尝试调用 data/market_sentiment.py（若存在），否则从东方财富全量
-    行情缓存快速估算：涨跌比 / 均涨幅 / 涨停率 / 强势股比 / 成交活跃度。
-    """
+    """7维市场情绪评分"""
     try:
-        from market_sentiment import MarketSentiment
-        ms = MarketSentiment()
-        result = ms.calculate()
+        result = _calc_market_sentiment()
         return jsonify({'status': 'success', 'data': result})
-    except ImportError:
-        pass
-    except Exception as e:
-        pass
-
-    # 快速估算：从 stock_cache_db 取当天全量行情
-    try:
-        from stock_cache_db import StockCache
-        cache = StockCache()
-        conn = cache.conn
-        cursor = conn.cursor()
-        from datetime import date as _date
-        today = _date.today().isoformat()
-        cursor.execute(
-            "SELECT change_pct, price FROM stocks WHERE date(update_time)=? AND price>0",
-            (today,)
-        )
-        rows = cursor.fetchall()
-        cache.close()
-
-        if len(rows) < 50:
-            return jsonify({
-                'status': 'success',
-                'data': {
-                    'score': None, 'level': '数据不足',
-                    'description': f'缓存仅 {len(rows)} 条，建议先运行选股或全市场更新',
-                    'dimensions': {}
-                }
-            })
-
-        changes = [r[0] for r in rows if r[0] is not None]
-        up   = sum(1 for c in changes if c > 0)
-        down = sum(1 for c in changes if c < 0)
-        total = len(changes)
-        limit_up = sum(1 for c in changes if c >= 9.9)
-
-        up_ratio       = up / total
-        avg_change     = sum(changes) / total
-        limit_up_rate  = limit_up / total
-        strong_ratio   = sum(1 for c in changes if c >= 3) / total
-
-        score = (
-            up_ratio       * 30 +
-            min(max(avg_change / 5, 0), 1) * 20 +
-            min(limit_up_rate / 0.03, 1)   * 20 +
-            min(strong_ratio  / 0.15, 1)   * 15 +
-            15  # 成交量维度（缓存无量数据，给中性基础分）
-        )
-        score = round(min(max(score, 0), 100), 1)
-
-        if score >= 75: level = '极度乐观'
-        elif score >= 60: level = '乐观'
-        elif score >= 50: level = '中性偏多'
-        elif score >= 40: level = '中性偏空'
-        elif score >= 25: level = '悲观'
-        else: level = '极度悲观'
-
-        return jsonify({'status': 'success', 'data': {
-            'score': score,
-            'level': level,
-            'description': f'涨跌比 {up}:{down}，均涨幅 {avg_change:.2f}%，涨停 {limit_up} 只',
-            'dimensions': {
-                '涨跌比':     round(up_ratio * 100, 1),
-                '均涨幅':     round(avg_change, 2),
-                '涨停率%':    round(limit_up_rate * 100, 2),
-                '强势股比%':  round(strong_ratio * 100, 1),
-                '样本数':     total,
-            }
-        }})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)})
 
