@@ -108,16 +108,25 @@
     label{color:var(--text-sec);font-size:.78rem;font-weight:500}
     .btn{
       border:none;border-radius:var(--radius);color:#fff;
-      padding:9px 18px;cursor:pointer;font-size:.84rem;
+      padding:10px 20px;cursor:pointer;font-size:.84rem;
       font-family:inherit;font-weight:500;
-      transition:var(--transition);display:inline-flex;align-items:center;gap:6px;
-      white-space:nowrap
+      transition:var(--transition);display:inline-flex;align-items:center;gap:7px;
+      white-space:nowrap;height:40px
     }
     .btn:active{transform:scale(.97)}
-    .btn-primary{background:var(--accent)}
-    .btn-primary:hover{background:var(--accent-hover)}
-    .btn-secondary{background:var(--bg-subtle);border:1px solid var(--border);color:var(--text-sec)}
+    .btn-primary{background:var(--accent);box-shadow:0 1px 4px rgba(79,70,229,.2)}
+    .btn-primary:hover{background:var(--accent-hover);box-shadow:0 2px 8px rgba(79,70,229,.3)}
+    .btn-secondary{background:var(--bg-card);border:1px solid var(--border);color:var(--text-sec)}
     .btn-secondary:hover{border-color:var(--accent);color:var(--accent)}
+    .btn-outline{background:var(--bg-card);border:1px solid var(--border);color:var(--text-sec)}
+    .btn-outline:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-dim)}
+    .btn-ai{
+      background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;
+      box-shadow:0 2px 12px rgba(99,102,241,.3);
+      padding:10px 24px;font-weight:600;letter-spacing:.01em
+    }
+    .btn-ai:hover{box-shadow:0 4px 16px rgba(99,102,241,.4);transform:translateY(-1px)}
+    .btn-ai:disabled{opacity:.5;cursor:not-allowed;transform:none;box-shadow:none}
     .btn-success{background:rgba(74,222,128,.15);border:1px solid rgba(74,222,128,.3);color:var(--green)}
     .btn-success:hover{background:rgba(74,222,128,.22)}
     .btn:disabled{opacity:.5;cursor:not-allowed;transform:none}
@@ -203,6 +212,34 @@
       animation:blink 1s step-end infinite
     }
     @keyframes blink{50%{opacity:0}}
+
+    /* ── History Reports ────────────────────────────────────────────── */
+    .history-list{display:flex;flex-direction:column;gap:6px;max-height:400px;overflow-y:auto}
+    .history-item{
+      display:flex;align-items:center;gap:12px;padding:10px 14px;
+      border:1px solid var(--border);border-radius:var(--radius);
+      transition:var(--transition);cursor:pointer
+    }
+    .history-item:hover{border-color:var(--accent);background:var(--accent-dim)}
+    .history-item.active{border-color:var(--accent);background:var(--accent-dim)}
+    .history-type{
+      padding:2px 8px;border-radius:6px;font-size:.72rem;font-weight:600;flex-shrink:0
+    }
+    .history-type-short{background:var(--red-dim);color:var(--red)}
+    .history-type-long{background:var(--accent-dim);color:var(--accent)}
+    .history-type-enh{background:var(--orange-dim);color:var(--orange)}
+    .history-info{flex:1;min-width:0}
+    .history-time{font-size:.82rem;color:var(--text);font-weight:500}
+    .history-meta{font-size:.73rem;color:var(--text-muted);margin-top:2px}
+    .history-actions{display:flex;gap:6px;flex-shrink:0}
+    .history-actions button{
+      border:1px solid var(--border);border-radius:6px;padding:4px 10px;
+      background:none;color:var(--text-sec);font-size:.73rem;cursor:pointer;
+      font-family:inherit;transition:var(--transition)
+    }
+    .history-actions button:hover{border-color:var(--accent);color:var(--accent)}
+    .history-actions .btn-del:hover{border-color:var(--red);color:var(--red)}
+    .history-empty{color:var(--text-muted);font-size:.82rem;padding:12px 0;text-align:center}
 
     /* ── Details / FAQ ──────────────────────────────────────────────── */
     details{margin:0}
@@ -316,37 +353,31 @@
 
   <!-- Selector Controls -->
   <div class="section">
-    <div class="controls-grid">
-      <!-- Left: Stock Selection -->
-      <div class="control-group">
-        <div class="group-label">选股策略</div>
-        <div class="control-row">
-          <select id="sel-type">
-            <option value="long">中长线（综合评分）</option>
-            <option value="short">短线（动量信号）</option>
-            <option value="enhanced">增强版（基本面+技术）</option>
-          </select>
-          <label style="margin-left:4px">数量</label>
-          <input type="number" id="top-n" value="5" min="1" max="20" style="width:60px">
-        </div>
-        <div class="btn-group">
-          <button class="btn btn-primary" onclick="runSelector()">&#9654; 运行选股</button>
-          <button class="btn btn-secondary" onclick="getReport()">&#8681; 导出报告</button>
-          <button class="btn btn-secondary" onclick="runGptAnalyze()" id="gpt-btn">&#9733; {{ llm_display_name }} 分析</button>
-        </div>
+    <!-- Input Row -->
+    <div style="display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap;margin-bottom:16px">
+      <div style="display:flex;gap:8px;align-items:center">
+        <select id="sel-type">
+          <option value="long">中长线（综合评分）</option>
+          <option value="short">短线（动量信号）</option>
+          <option value="enhanced">增强版（基本面+技术）</option>
+        </select>
+        <label>数量</label>
+        <input type="number" id="top-n" value="5" min="1" max="20" style="width:56px">
       </div>
-
-      <!-- Right: Individual Stock -->
-      <div class="control-group">
-        <div class="group-label">个股分析</div>
-        <div class="search-wrap">
-          <input type="text" id="stock-search" placeholder="输入股票代码或名称，如 600519 或 贵州茅台" autocomplete="off">
+      <div style="display:flex;gap:8px;flex:1;min-width:200px">
+        <div class="search-wrap" style="max-width:100%;flex:1">
+          <input type="text" id="stock-search" placeholder="股票代码或名称，如 600519 或 贵州茅台" autocomplete="off">
           <div id="search-dropdown"></div>
         </div>
-        <div>
-          <button class="btn btn-success" onclick="analyzeSingleStock()" id="analyze-btn">&#9654; 分析个股</button>
-        </div>
+        <button class="btn btn-outline" onclick="analyzeSingleStock()" id="analyze-btn">&#128269; 查询</button>
       </div>
+    </div>
+
+    <!-- Action Row -->
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <button class="btn btn-primary" onclick="runSelector()">&#9654; 扫描选股</button>
+      <button class="btn btn-ai" onclick="runGptAnalyze()" id="gpt-btn">&#9733; AI 分析</button>
+      <button class="btn btn-secondary" onclick="getReport()">&#8681; 导出报告</button>
     </div>
 
     <div id="status"></div>
@@ -369,6 +400,16 @@
       {{ llm_display_name }} 深度研报
     </div>
     <div class="report-content report-streaming" id="gpt-report"></div>
+  </div>
+
+  <!-- History Reports -->
+  <div class="section">
+    <details id="history-details" ontoggle="if(this.open)loadReportHistory()">
+      <summary>历史报告</summary>
+      <div id="history-list" class="history-list">
+        <div class="history-empty">展开后自动加载...</div>
+      </div>
+    </details>
   </div>
 
   <!-- Usage Guide -->
@@ -651,7 +692,79 @@ async function runGptAnalyze(){
   }finally{
     el.classList.remove('report-streaming');
     btn.disabled=false; btn.textContent='* '+_llmName+' 分析';
+    // 刷新历史报告列表
+    const hd=document.getElementById('history-details');
+    if(hd&&hd.open) loadReportHistory();
   }
+}
+
+// -- History Reports --
+async function loadReportHistory(){
+  const el=document.getElementById('history-list');
+  try{
+    const r=await fetch('/api/reports/list');
+    const d=await r.json();
+    if(d.status!=='success'||!d.data||!d.data.length){
+      el.innerHTML='<div class="history-empty">暂无历史报告</div>';return;
+    }
+    const typeClass={'短线':'history-type-short','中长线':'history-type-long','增强版':'history-type-enh'};
+    el.innerHTML=d.data.map(f=>{
+      const sizeKB=(f.size/1024).toFixed(1);
+      const cls=typeClass[f.type]||'history-type-long';
+      return `<div class="history-item" id="hi-${f.filename.replace(/[^a-zA-Z0-9_]/g,'_')}">
+        <span class="history-type ${cls}">${f.type}</span>
+        <div class="history-info">
+          <div class="history-time">${f.time}</div>
+          <div class="history-meta">${sizeKB} KB</div>
+        </div>
+        <div class="history-actions">
+          <button onclick="viewReport('${f.filename.replace(/'/g,"\\'")}',this)">查看</button>
+          <button class="btn-del" onclick="deleteReport('${f.filename.replace(/'/g,"\\'")}',this)">删除</button>
+        </div>
+      </div>`;
+    }).join('');
+  }catch(e){
+    el.innerHTML='<div class="history-empty">加载失败</div>';
+  }
+}
+
+async function viewReport(filename,btn){
+  // highlight active item
+  document.querySelectorAll('.history-item').forEach(el=>el.classList.remove('active'));
+  if(btn) btn.closest('.history-item').classList.add('active');
+  try{
+    const r=await fetch('/api/reports/read?file='+encodeURIComponent(filename));
+    const d=await r.json();
+    if(d.status!=='success'){alert(d.message||'读取失败');return;}
+    const card=document.getElementById('gpt-card');
+    const el=document.getElementById('gpt-report');
+    _gptRawText=d.content;
+    el.innerHTML=marked.parse(d.content);
+    el.classList.remove('report-streaming');
+    card.style.display='';
+    card.scrollIntoView({behavior:'smooth',block:'start'});
+  }catch(e){
+    alert('读取报告失败: '+e.message);
+  }
+}
+
+async function deleteReport(filename,btn){
+  if(!confirm('确认删除此报告？'))return;
+  try{
+    const r=await fetch('/api/reports/delete',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({file:filename})
+    });
+    const d=await r.json();
+    if(d.status==='success'){
+      const item=btn.closest('.history-item');
+      if(item)item.remove();
+      const list=document.getElementById('history-list');
+      if(!list.querySelector('.history-item')){
+        list.innerHTML='<div class="history-empty">暂无历史报告</div>';
+      }
+    }else{alert(d.message||'删除失败');}
+  }catch(e){alert('删除失败: '+e.message);}
 }
 
 // -- Stock Search --
@@ -708,7 +821,7 @@ async function analyzeSingleStock(){
   const type=document.getElementById('sel-type').value;
   const btn=document.getElementById('analyze-btn');
   btn.disabled=true; btn.textContent='分析中...';
-  document.getElementById('status').textContent='正在分析 '+code+'，请稍候...';
+  document.getElementById('status').textContent='正在查询 '+code+'，请稍候...';
 
   try{
     const r=await fetch('/api/stock/analyze',{
@@ -721,12 +834,12 @@ async function analyzeSingleStock(){
     }
     lastResults=d.data||[];
     document.getElementById('status').textContent=
-      d.timestamp+'  个股分析：'+(lastResults.length?lastResults[0].name+'('+code+')':code);
+      d.timestamp+'  查询：'+(lastResults.length?lastResults[0].name+'('+code+')':code);
     renderResults(lastResults);
   }catch(e){
     document.getElementById('status').textContent='Error: '+e.message;
   }finally{
-    btn.disabled=false; btn.textContent='▶ 分析个股';
+    btn.disabled=false; btn.textContent='🔍 查询个股';
   }
 }
 </script>

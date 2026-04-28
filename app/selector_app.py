@@ -68,6 +68,26 @@ def logout():
 
 from config import WEB_HOST, WEB_PORT
 
+# ── 报告存储 ──────────────────────────────────────────────────────────────────
+REPORTS_DIR = os.path.join(_ROOT, 'doc')
+_TYPE_NAMES = {'short': '短线', 'long': '中长线', 'enhanced': '增强版'}
+
+
+def _save_report(report_text: str, selector_type: str, stocks: list) -> str:
+    """保存报告到 doc/ 目录，返回文件名"""
+    os.makedirs(REPORTS_DIR, exist_ok=True)
+    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+    label = _TYPE_NAMES.get(selector_type, '选股')
+    filename = f"{label}_深度研报_{ts}.md"
+    filepath = os.path.join(REPORTS_DIR, filename)
+    header = (
+        f"> 策略：{label}  |  时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"> 股票：{'、'.join(s.get('name', s.get('code', '')) + '(' + s.get('code', '') + ')' for s in stocks[:10])}\n\n---\n\n"
+    )
+    with open(filepath, 'w', encoding='utf-8') as f:
+        f.write(header + report_text)
+    return filename
+
 # ── 页面路由 ────────────────────────────────────────────────────────────────
 @app.route('/')
 @login_required
@@ -535,25 +555,99 @@ def api_gpt_analyze():
     sentiment = _calc_market_sentiment()
 
     use_stream = bool(data.get('stream', False))
+    selector_type = data.get('type', 'long')
 
     try:
         from gpt_analyst import run_analysis
         if use_stream:
             def generate():
+                chunks = []
                 try:
                     for chunk in run_analysis(codes, sentiment, stocks_data, stream=True):
+                        chunks.append(chunk)
                         yield chunk
                 except Exception as e:
                     import traceback
                     traceback.print_exc()
-                    yield f'\n\n❌ 分析出错: {e}'
+                    err = f'\n\n分析出错: {e}'
+                    chunks.append(err)
+                    yield err
+                finally:
+                    _save_report(''.join(chunks), selector_type, stocks)
             return Response(stream_with_context(generate()), content_type='text/plain; charset=utf-8')
         else:
             report = run_analysis(codes, sentiment, stocks_data, stream=False)
+            _save_report(report, selector_type, stocks)
             return jsonify({'status': 'success', 'report': report})
     except Exception as e:
         import traceback
         traceback.print_exc()
+        return jsonify({'status': 'error', 'message': str(e)})
+
+
+# ── 历史报告 API ──────────────────────────────────────────────────────────────
+@app.route('/api/reports/list', methods=['GET'])
+@login_required
+def api_reports_list():
+    """返回 doc/ 下所有报告文件列表，按修改时间倒序"""
+    os.makedirs(REPORTS_DIR, exist_ok=True)
+    files = []
+    try:
+        for fname in os.listdir(REPORTS_DIR):
+            if not fname.endswith('.md'):
+                continue
+            fpath = os.path.join(REPORTS_DIR, fname)
+            stat = os.stat(fpath)
+            # 从文件名解析策略类型
+            type_tag = '选股'
+            for key, val in _TYPE_NAMES.items():
+                if fname.startswith(val):
+                    type_tag = val
+                    break
+            files.append({
+                'filename': fname,
+                'size': stat.st_size,
+                'time': datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M'),
+                'type': type_tag,
+            })
+        files.sort(key=lambda x: x['time'], reverse=True)
+    except Exception:
+        pass
+    return jsonify({'status': 'success', 'data': files})
+
+
+@app.route('/api/reports/read', methods=['GET'])
+@login_required
+def api_reports_read():
+    """读取指定报告内容"""
+    fname = request.args.get('file', '').strip()
+    if not fname or '/' in fname or '\\' in fname or '..' in fname:
+        return jsonify({'status': 'error', 'message': '无效文件名'})
+    fpath = os.path.join(REPORTS_DIR, fname)
+    if not os.path.isfile(fpath):
+        return jsonify({'status': 'error', 'message': '文件不存在'})
+    try:
+        with open(fpath, 'r', encoding='utf-8') as f:
+            content = f.read()
+        return jsonify({'status': 'success', 'content': content})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
+
+
+@app.route('/api/reports/delete', methods=['POST'])
+@login_required
+def api_reports_delete():
+    """删除指定报告"""
+    fname = (request.json or {}).get('file', '').strip()
+    if not fname or '/' in fname or '\\' in fname or '..' in fname:
+        return jsonify({'status': 'error', 'message': '无效文件名'})
+    fpath = os.path.join(REPORTS_DIR, fname)
+    if not os.path.isfile(fpath):
+        return jsonify({'status': 'error', 'message': '文件不存在'})
+    try:
+        os.remove(fpath)
+        return jsonify({'status': 'success'})
+    except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)})
 
 
