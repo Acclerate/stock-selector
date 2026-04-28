@@ -278,11 +278,27 @@ def _calc_market_sentiment() -> dict:
             (today,)
         )
         rows = cursor.fetchall()
+        # 判断数据日期
+        data_date = today
+        if len(rows) < 50:
+            # 今天数据不足，尝试取最近有数据的日期
+            cursor.execute(
+                "SELECT date(update_time) as d FROM stocks WHERE price>0 GROUP BY d ORDER BY d DESC LIMIT 1"
+            )
+            d_row = cursor.fetchone()
+            if d_row:
+                data_date = d_row[0]
+                cursor.execute(
+                    "SELECT change_pct, price FROM stocks WHERE date(update_time)=? AND price>0",
+                    (data_date,)
+                )
+                rows = cursor.fetchall()
         cache.close()
 
         if len(rows) < 50:
             return {'score': None, 'level': '数据不足',
-                    'description': f'缓存仅 {len(rows)} 条，建议先运行选股', 'dimensions': {}}
+                    'description': f'缓存仅 {len(rows)} 条，建议先运行选股',
+                    'data_date': data_date, 'dimensions': {}}
 
         changes = [r[0] for r in rows if r[0] is not None]
         up = sum(1 for c in changes if c > 0)
@@ -314,6 +330,7 @@ def _calc_market_sentiment() -> dict:
         return {
             'score': score, 'level': level,
             'description': f'涨跌比 {up}:{down}，均涨幅 {avg_change:.2f}%，涨停 {limit_up} 只',
+            'data_date': data_date,
             'dimensions': {
                 '涨跌比': round(up_ratio * 100, 1),
                 '均涨幅': round(avg_change, 2),
@@ -560,13 +577,98 @@ def api_lhb_top():
     try:
         from lhb_fetcher import LHBFetcher
         fetcher = LHBFetcher()
-        top = fetcher.get_top_lhb_stocks(limit=10)
-        if not top:
-            # 尝试实时拉取今日龙虎榜
+        # 先尝试刷新（写入带 name 的数据），失败不影响旧缓存
+        try:
             fetcher.save_lhb_to_cache()
-            top = fetcher.get_top_lhb_stocks(limit=10)
+        except Exception:
+            pass
+        top = fetcher.get_top_lhb_stocks(limit=10)
         sentiment = fetcher.analyze_lhb_sentiment()
         return jsonify({'status': 'success', 'data': {'top': top, 'sentiment': sentiment}})
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return jsonify({'status': 'error', 'message': str(e)})
+
+
+# ── 个股搜索与分析 API ───────────────────────────────────────────────────
+@app.route('/api/stock/search', methods=['GET'])
+@login_required
+def api_stock_search():
+    """按代码或名称模糊搜索股票，返回候选列表"""
+    q = request.args.get('q', '').strip()
+    if not q:
+        return jsonify({'status': 'success', 'data': []})
+
+    try:
+        cache = StockCache()
+        cursor = cache.conn.cursor()
+        cursor.execute(
+            "SELECT code, name, price FROM stocks "
+            "WHERE code LIKE ? OR name LIKE ? "
+            "ORDER BY update_time DESC LIMIT 20",
+            (q + '%', '%' + q + '%')
+        )
+        results = [{'code': r[0], 'name': r[1], 'price': r[2]} for r in cursor.fetchall()]
+        cache.close()
+
+        # SQLite 不足3条时，尝试掘金全量名称缓存补填
+        if len(results) < 3:
+            try:
+                from diggold_source import DiggoldSource
+                if DiggoldSource.is_available():
+                    dg = DiggoldSource()
+                    existing_codes = {r['code'] for r in results}
+                    q_lower = q.lower()
+                    for code, name in dg._name_cache.items():
+                        if code in existing_codes:
+                            continue
+                        if code.startswith(q_lower) or q_lower in name:
+                            results.append({'code': code, 'name': name, 'price': None})
+                            existing_codes.add(code)
+                            if len(results) >= 20:
+                                break
+            except Exception:
+                pass
+
+        return jsonify({'status': 'success', 'data': results})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
+
+
+@app.route('/api/stock/analyze', methods=['POST'])
+@login_required
+def api_stock_analyze():
+    """分析单只股票，请求体: {code, type}"""
+    data = request.json or {}
+    code = str(data.get('code', '')).strip().zfill(6)
+    selector_type = data.get('type', 'long')
+
+    if not code.isdigit() or len(code) != 6:
+        return jsonify({'status': 'error', 'message': '请输入6位股票代码'})
+
+    try:
+        if selector_type == 'short':
+            from short_term_selector import ShortTermSelector
+            selector = ShortTermSelector()
+        elif selector_type == 'enhanced':
+            from enhanced_long_term_selector import EnhancedLongTermSelector
+            selector = EnhancedLongTermSelector()
+        else:
+            from long_term_selector import LongTermSelector
+            selector = LongTermSelector()
+
+        result = selector.analyze_single_stock(code)
+        selector.close()
+
+        if not result:
+            return jsonify({'status': 'error', 'message': f'无法分析 {code}，可能无历史数据'})
+
+        return jsonify({
+            'status': 'success',
+            'type': selector_type,
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'data': [result],
+        })
     except Exception as e:
         import traceback; traceback.print_exc()
         return jsonify({'status': 'error', 'message': str(e)})

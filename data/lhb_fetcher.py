@@ -116,41 +116,111 @@ class LHBFetcher:
     
     def save_lhb_to_cache(self, date: str = None):
         """
-        获取并保存当日龙虎榜数据到缓存
-        
-        Args:
-            date: 日期字符串，格式 YYYYMMDD
+        获取并保存龙虎榜数据到缓存，优先当天，无数据则回溯最近5天。
+        同时回填已有条目的空名称。
         """
-        if date is None:
-            date = datetime.now().strftime('%Y%m%d')
-        
-        df = self.get_daily_lhb(date)
-        if df.empty:
+        # 拉取最近几天的龙虎榜数据，构建 code->name 映射
+        all_names = {}
+        all_dfs = []
+        for days_back in range(0, 6):
+            d = (datetime.now() - timedelta(days=days_back)).strftime('%Y%m%d')
+            df = self.get_daily_lhb(d)
+            if not df.empty:
+                all_dfs.append(df)
+                if '代码' in df.columns and '名称' in df.columns:
+                    for _, row in df.iterrows():
+                        code = row['代码']
+                        name = row['名称']
+                        if code and name and code not in all_names:
+                            all_names[code] = name
+        if not all_dfs:
             return
-        
-        # 按股票代码分组，汇总买卖金额
+
+        # 用最新一天的数据更新 lhb 缓存
+        df = all_dfs[0]
         if '代码' in df.columns:
-            # 检查实际列名
             buy_col = '龙虎榜买入额' if '龙虎榜买入额' in df.columns else '买入总额'
             sell_col = '龙虎榜卖出额' if '龙虎榜卖出额' in df.columns else '卖出总额'
             net_col = '龙虎榜净买额' if '龙虎榜净买额' in df.columns else '净买额'
-            
-            grouped = df.groupby('代码').agg({
-                buy_col: 'sum',
-                sell_col: 'sum',
-                net_col: 'sum'
-            }).reset_index()
-            
+            name_col = '名称' if '名称' in df.columns else None
+            agg_dict = {buy_col: 'sum', sell_col: 'sum', net_col: 'sum'}
+            if name_col:
+                agg_dict[name_col] = 'first'
+            grouped = df.groupby('代码').agg(agg_dict).reset_index()
+
             for _, row in grouped.iterrows():
                 code = row['代码']
                 data = {
                     'buy_amount': row[buy_col],
                     'sell_amount': row[sell_col],
-                    'net_amount': row[net_col]
+                    'net_amount': row[net_col],
+                    'name': row.get(name_col, '') if name_col else '',
                 }
                 self.cache.save_lhb(code, data)
-            
-            print(f"✅ 已保存 {len(grouped)} 只股票的龙虎榜数据到缓存")
+
+            print(f"已保存 {len(grouped)} 只股票的龙虎榜数据到缓存")
+
+        # 回填所有 lhb 表中 name 为空的条目
+        cursor = self.cache.conn.cursor()
+        cursor.execute("SELECT code FROM lhb WHERE name IS NULL OR name=''")
+        empty_codes = [r[0] for r in cursor.fetchall()]
+        if not empty_codes:
+            return
+        # 用已收集的龙虎榜名称回填
+        filled = 0
+        for code in empty_codes:
+            name = all_names.get(code, '')
+            if name:
+                cursor.execute("UPDATE lhb SET name=? WHERE code=?", (name, code))
+                filled += 1
+        if filled:
+            self.cache.conn.commit()
+            print(f"已回填 {filled} 只股票的名称")
+        # 剩余空名称：从 stocks 表或实时接口补充
+        cursor.execute("SELECT code FROM lhb WHERE name IS NULL OR name=''")
+        still_empty = [r[0] for r in cursor.fetchall()]
+        if still_empty:
+            name_map = self._batch_lookup_names(still_empty)
+            if name_map:
+                for code, name in name_map.items():
+                    cursor.execute("UPDATE lhb SET name=? WHERE code=?", (name, code))
+                self.cache.conn.commit()
+                print(f"实时补充 {len(name_map)} 只股票的名称")
+
+    def _batch_lookup_names(self, codes: List[str]) -> Dict[str, str]:
+        """批量查询股票名称，优先 stocks 表，其次东方财富实时接口"""
+        result = {}
+        cursor = self.cache.conn.cursor()
+        remaining = []
+        for code in codes:
+            cursor.execute("SELECT name FROM stocks WHERE code=? AND name IS NOT NULL AND name!='' LIMIT 1", (code,))
+            r = cursor.fetchone()
+            if r and r[0]:
+                result[code] = r[0]
+            else:
+                remaining.append(code)
+        # 实时接口补充
+        for code in remaining:
+            try:
+                import urllib.request, urllib.parse, json as _json
+                secid = '1.' + code if code.startswith('6') else '0.' + code
+                url = ('https://push2.eastmoney.com/api/qt/ulist.np/get?'
+                       + urllib.parse.urlencode({
+                           'fltt': '2', 'invt': '2',
+                           'fields': 'f12,f14',
+                           'secids': secid,
+                       }))
+                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    data = _json.loads(resp.read().decode())
+                items = data.get('data', {}).get('diff', [])
+                if items:
+                    name = items[0].get('f14', '')
+                    if name:
+                        result[code] = name
+            except Exception:
+                pass
+        return result
     
     def get_top_lhb_stocks(self, limit: int = 10) -> List[Dict]:
         """
@@ -164,28 +234,67 @@ class LHBFetcher:
         """
         # 直接从龙虎榜表获取所有有数据的股票
         cursor = self.cache.conn.cursor()
+        # 确保 name 列存在
+        cursor.execute("PRAGMA table_info(lhb)")
+        columns = [col[1] for col in cursor.fetchall()]
+        if 'name' not in columns:
+            cursor.execute("ALTER TABLE lhb ADD COLUMN name TEXT DEFAULT ''")
+            self.cache.conn.commit()
+
         cutoff = datetime.now() - timedelta(hours=48)
-        
+
         cursor.execute('''
-            SELECT code, buy_amount, sell_amount, net_amount, update_time
+            SELECT code, name, buy_amount, sell_amount, net_amount, update_time
             FROM lhb
             WHERE update_time > ? AND net_amount > 0
             ORDER BY net_amount DESC
             LIMIT ?
         ''', (cutoff, limit))
-        
+
         lhb_stocks = []
         for row in cursor.fetchall():
             code = row[0]
-            # 尝试从缓存获取股票名称和涨跌幅
-            stock_data = self.cache.get_stock(code)
+            lhb_name = row[1] or ''
+            # 名称优先级：lhb表自带 > stocks表(不限时间) > 实时拉取 > 代码兜底
+            if not lhb_name:
+                # 从 stocks 表直接查名称（不限时间，只查 name 列）
+                try:
+                    c2 = self.cache.conn.cursor()
+                    c2.execute("SELECT name FROM stocks WHERE code=? AND name IS NOT NULL AND name!='' LIMIT 1", (code,))
+                    r2 = c2.fetchone()
+                    if r2 and r2[0]:
+                        lhb_name = r2[0]
+                except Exception:
+                    pass
+            if not lhb_name:
+                # 尝试实时获取
+                try:
+                    stock_data = self.cache.get_stock(code)
+                    if stock_data and stock_data.get('name'):
+                        lhb_name = stock_data['name']
+                except Exception:
+                    pass
+            name = lhb_name or code
+            # 回写名称到 lhb 表
+            if lhb_name and not row[1]:
+                try:
+                    cursor.execute("UPDATE lhb SET name=? WHERE code=?", (lhb_name, code))
+                    self.cache.conn.commit()
+                except Exception:
+                    pass
+            # 获取涨跌幅
+            try:
+                stock_data = self.cache.get_stock(code)
+                change_pct = stock_data.get('change_pct', 0) if stock_data else 0
+            except Exception:
+                change_pct = 0
             lhb_stocks.append({
                 'code': code,
-                'name': stock_data['name'] if stock_data else code,
-                'buy_amount': row[1],
-                'sell_amount': row[2],
-                'net_amount': row[3],
-                'change_pct': stock_data.get('change_pct', 0) if stock_data else 0
+                'name': name,
+                'buy_amount': row[2],
+                'sell_amount': row[3],
+                'net_amount': row[4],
+                'change_pct': change_pct
             })
         
         return lhb_stocks

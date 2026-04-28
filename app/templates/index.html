@@ -4,240 +4,391 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>量化选股 · AI研报</title>
-  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
+    :root{
+      --bg:#f5f6f8;--bg-card:#fff;--bg-card-hover:#f8f9fb;
+      --bg-input:#f5f6f8;--bg-subtle:#f8f9fb;
+      --border:#e5e7eb;--border-light:#eef0f4;
+      --text:#1f2937;--text-sec:#6b7280;--text-muted:#9ca3af;
+      --accent:#4f46e5;--accent-hover:#4338ca;--accent-dim:rgba(79,70,229,.08);
+      --green:#16a34a;--green-dim:rgba(22,163,74,.08);
+      --red:#dc2626;--red-dim:rgba(220,38,38,.08);
+      --orange:#ea580c;--orange-dim:rgba(234,88,12,.08);
+      --radius:10px;--radius-lg:14px;--radius-xl:18px;
+      --shadow:0 1px 3px rgba(0,0,0,.06),0 1px 2px rgba(0,0,0,.04);
+      --transition:all .2s ease;
+    }
     body{
-      font-family:'Noto Sans SC','Segoe UI',sans-serif;
-      background: linear-gradient(135deg, #fdf6f9 0%, #f0eaf8 50%, #e8f0fb 100%);
-      color:#4a3f5c;min-height:100vh;font-weight:300
+      font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;
+      background:var(--bg);color:var(--text);min-height:100vh;font-size:14px;line-height:1.6
     }
+
+    /* ── Header ─────────────────────────────────────────────────────── */
     header{
-      background:rgba(255,255,255,0.72);
-      backdrop-filter:blur(12px);
-      border-bottom:1px solid #e8d5ea;
-      padding:14px 28px;
-      display:flex;justify-content:space-between;align-items:center;
-      box-shadow:0 2px 16px rgba(180,140,200,.12)
+      background:var(--bg-card);border-bottom:1px solid var(--border);
+      padding:0 28px;height:56px;display:flex;justify-content:space-between;align-items:center;
+      position:sticky;top:0;z-index:50;backdrop-filter:blur(12px);
+      background:rgba(255,255,255,.88)
     }
-    header h1{font-size:1.15rem;font-weight:500;color:#b06db8;letter-spacing:.04em}
-    header a{
-      color:#a08ab8;font-size:.82rem;text-decoration:none;
-      background:rgba(180,140,200,.1);
-      padding:5px 12px;border-radius:20px;
-      border:1px solid #d8c5e0;
-      transition:background .2s
+    header .logo{display:flex;align-items:center;gap:10px;font-size:1rem;font-weight:600;color:var(--text)}
+    header .logo span{color:var(--accent)}
+    header .user-info{display:flex;align-items:center;gap:16px;font-size:.82rem;color:var(--text-sec)}
+    header .user-info a{
+      color:var(--text-sec);text-decoration:none;
+      padding:5px 14px;border-radius:var(--radius);border:1px solid var(--border);
+      transition:var(--transition);font-size:.8rem
     }
-    header a:hover{background:rgba(180,140,200,.22)}
-    .main{max-width:1100px;margin:0 auto;padding:28px 20px}
-    .row{display:flex;gap:20px;flex-wrap:wrap}
-    .card{
-      background:rgba(255,255,255,0.78);
-      border:1px solid #e8d5ea;
-      border-radius:20px;
-      padding:24px;flex:1;min-width:280px;
-      box-shadow:0 4px 24px rgba(160,120,200,.10);
-      backdrop-filter:blur(8px)
+    header .user-info a:hover{border-color:var(--accent);color:var(--accent)}
+
+    /* ── Layout ─────────────────────────────────────────────────────── */
+    .main{max-width:1200px;margin:0 auto;padding:24px 20px 40px}
+    .section{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-xl);padding:20px 24px;margin-bottom:20px;box-shadow:var(--shadow)}
+    .section-title{
+      font-size:.88rem;font-weight:600;color:var(--text);margin-bottom:16px;
+      display:flex;align-items:center;gap:8px
     }
-    .card h3{
-      font-size:.92rem;font-weight:500;
-      color:#b06db8;margin-bottom:16px;
-      display:flex;align-items:center;gap:6px
+    .section-title .icon{
+      width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;
+      font-size:.85rem;flex-shrink:0
     }
-    .ctrl-row{display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;align-items:center}
-    select,input[type=number]{
-      background:rgba(240,234,248,.6);
-      border:1px solid #d8c5e0;
-      border-radius:10px;
-      color:#5a4a72;
-      padding:8px 12px;
-      font-size:.88rem;
-      font-family:inherit;
-      outline:none;
+    .icon-accent{background:var(--accent-dim);color:var(--accent)}
+    .icon-green{background:var(--green-dim);color:var(--green)}
+    .icon-orange{background:var(--orange-dim);color:var(--orange)}
+
+    /* ── Market Sentiment ───────────────────────────────────────────── */
+    .sentiment-grid{display:grid;grid-template-columns:180px 1fr;gap:20px;align-items:stretch}
+    .sentiment-score-box{
+      background:var(--bg-subtle);border:1px solid var(--border);border-radius:var(--radius-lg);
+      padding:20px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center
+    }
+    .sentiment-score-box .big-num{font-size:2.6rem;font-weight:700;line-height:1;color:var(--accent)}
+    .sentiment-score-box .level{font-size:.78rem;color:var(--text-sec);margin-top:6px}
+    .sentiment-score-box .level-desc{font-size:.72rem;color:var(--text-muted);margin-top:4px}
+    .dim-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px 20px}
+    .dim-item{display:flex;flex-direction:column;gap:4px}
+    .dim-label{font-size:.78rem;color:var(--text-sec);display:flex;justify-content:space-between}
+    .dim-label .val{color:var(--text);font-weight:500}
+    .dim-bar-wrap{height:5px;background:var(--border);border-radius:3px;overflow:hidden}
+    .dim-bar{height:100%;border-radius:3px;background:var(--accent);transition:width .5s ease}
+
+    /* ── LHB ────────────────────────────────────────────────────────── */
+    .lhb-header{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+    .lhb-badge{
+      display:inline-block;padding:2px 10px;border-radius:6px;font-size:.73rem;
+      background:var(--orange-dim);color:var(--orange);font-weight:500
+    }
+    .lhb-table-wrap{overflow-x:auto;margin-top:12px}
+    table{width:100%;border-collapse:collapse;font-size:.82rem}
+    thead th{
+      padding:10px 10px;text-align:left;color:var(--text-sec);font-weight:500;font-size:.78rem;
+      border-bottom:1px solid var(--border);white-space:nowrap
+    }
+    tbody td{padding:9px 10px;border-bottom:1px solid var(--border-light);white-space:nowrap}
+    tbody tr{transition:var(--transition)}
+    tbody tr:hover{background:var(--bg-card-hover)}
+
+    /* ── Controls ───────────────────────────────────────────────────── */
+    .controls-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+    @media(max-width:768px){.controls-grid{grid-template-columns:1fr}}
+    .control-group{display:flex;flex-direction:column;gap:12px}
+    .control-group .group-label{
+      font-size:.75rem;font-weight:600;color:var(--text-sec);
+      text-transform:uppercase;letter-spacing:.06em;margin-bottom:2px
+    }
+    .control-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    select,input[type=number],input[type=text]{
+      background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius);
+      color:var(--text);padding:9px 12px;font-size:.84rem;font-family:inherit;outline:none;
       transition:border .2s
     }
-    select:focus,input:focus{border-color:#c094cc}
-    label{color:#a08ab8;font-size:.83rem}
-    button{
-      background:linear-gradient(135deg,#c994d4,#a87ac0);
-      border:none;border-radius:10px;color:#fff;
-      padding:9px 20px;cursor:pointer;font-size:.88rem;
-      font-family:inherit;font-weight:400;
-      box-shadow:0 3px 12px rgba(180,120,200,.28);
-      transition:opacity .2s,transform .1s
+    select:focus,input:focus{border-color:var(--accent)}
+    select{padding-right:28px;cursor:pointer}
+    label{color:var(--text-sec);font-size:.78rem;font-weight:500}
+    .btn{
+      border:none;border-radius:var(--radius);color:#fff;
+      padding:9px 18px;cursor:pointer;font-size:.84rem;
+      font-family:inherit;font-weight:500;
+      transition:var(--transition);display:inline-flex;align-items:center;gap:6px;
+      white-space:nowrap
     }
-    button:hover{opacity:.88;transform:translateY(-1px)}
-    button:active{transform:translateY(0)}
-    button.secondary{
-      background:linear-gradient(135deg,#a8b8d4,#8898be);
-      box-shadow:0 3px 12px rgba(120,140,200,.22)
+    .btn:active{transform:scale(.97)}
+    .btn-primary{background:var(--accent)}
+    .btn-primary:hover{background:var(--accent-hover)}
+    .btn-secondary{background:var(--bg-subtle);border:1px solid var(--border);color:var(--text-sec)}
+    .btn-secondary:hover{border-color:var(--accent);color:var(--accent)}
+    .btn-success{background:rgba(74,222,128,.15);border:1px solid rgba(74,222,128,.3);color:var(--green)}
+    .btn-success:hover{background:rgba(74,222,128,.22)}
+    .btn:disabled{opacity:.5;cursor:not-allowed;transform:none}
+    .btn-group{display:flex;gap:8px;flex-wrap:wrap}
+
+    /* ── Search ─────────────────────────────────────────────────────── */
+    .search-wrap{position:relative;flex:1;min-width:200px;max-width:360px}
+    .search-wrap input{width:100%}
+    #search-dropdown{
+      display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;
+      background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);
+      max-height:240px;overflow-y:auto;z-index:100;box-shadow:0 4px 16px rgba(0,0,0,.1)
     }
-    #results-table{width:100%;border-collapse:collapse;font-size:.86rem;margin-top:4px}
-    #results-table th{
-      background:linear-gradient(90deg,#f3eaf8,#eae8f5);
-      padding:10px 8px;text-align:left;
-      color:#8a6fa8;font-weight:500;font-size:.82rem;
-      border-bottom:1px solid #d8c5e0
+    .search-item{
+      padding:10px 14px;cursor:pointer;font-size:.82rem;
+      display:flex;justify-content:space-between;align-items:center;
+      border-bottom:1px solid var(--border-light);transition:var(--transition)
     }
-    #results-table td{
-      padding:10px 8px;
-      border-bottom:1px solid #f0e8f2;
-      transition:background .15s
+    .search-item:hover{background:var(--bg-card-hover)}
+    .search-item:last-child{border-bottom:none}
+    .si-code{color:var(--accent);font-weight:600;font-family:'Consolas','Courier New',monospace;margin-right:8px;font-size:.8rem}
+    .si-name{color:var(--text)}
+    .si-price{color:var(--text-muted);font-size:.75rem}
+
+    /* ── Status ─────────────────────────────────────────────────────── */
+    #status{color:var(--text-sec);font-size:.82rem;min-height:22px;padding:2px 0}
+
+    /* ── Results Table ──────────────────────────────────────────────── */
+    .results-wrap{overflow-x:auto;margin-top:8px}
+    .badge{
+      padding:3px 10px;border-radius:6px;font-size:.73rem;font-weight:600;
+      display:inline-block;min-width:28px;text-align:center
     }
-    #results-table tr:hover td{background:rgba(240,234,248,.5)}
-    .badge{padding:3px 10px;border-radius:12px;font-size:.75rem;font-weight:500}
-    .badge-A\+{background:#fce4f0;color:#c2547a}
-    .badge-A{background:#e4eeff;color:#5578c2}
-    .badge-B\+{background:#fef3e2;color:#c28840}
-    .badge-B{background:#f3f8e4;color:#7a9840}
-    .badge-C{background:#f0edf4;color:#9a94a8}
-    .pos{color:#e06080}
-    .neg{color:#60a880}
-    #status{
-      color:#a08ab8;font-size:.84rem;margin-bottom:12px;min-height:20px;
-      padding:0 2px
+    .badge-A\+{background:var(--red-dim);color:var(--red)}
+    .badge-A{background:var(--accent-dim);color:var(--accent)}
+    .badge-B\+{background:var(--orange-dim);color:var(--orange)}
+    .badge-B{background:var(--green-dim);color:var(--green)}
+    .badge-C{background:var(--bg-subtle);color:var(--text-muted)}
+    .pos{color:var(--red)}.neg{color:var(--green)}
+
+    /* ── GPT Report ─────────────────────────────────────────────────── */
+    #gpt-card{border-color:var(--border)}
+    .report-content{
+      background:var(--bg-subtle);border:1px solid var(--border);border-radius:var(--radius-lg);
+      padding:24px 28px;font-size:.86rem;line-height:1.8;color:var(--text);
+      max-height:600px;overflow-y:auto;
+      font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif
     }
-    pre#report{
-      background:rgba(240,234,248,.4);
-      border:1px solid #e0d0ea;
-      border-radius:12px;
-      padding:16px;font-size:.81rem;
-      white-space:pre-wrap;max-height:420px;overflow-y:auto;
-      font-family:'Noto Sans SC',sans-serif;
-      line-height:1.7;color:#5a4a72
+    .report-content h1{font-size:1.35rem;font-weight:700;color:var(--text);margin:24px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--border)}
+    .report-content h1:first-child{margin-top:0}
+    .report-content h2{font-size:1.1rem;font-weight:700;color:var(--text);margin:20px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--border-light)}
+    .report-content h3{font-size:.96rem;font-weight:600;color:var(--text);margin:16px 0 8px}
+    .report-content h4{font-size:.9rem;font-weight:600;color:var(--text-sec);margin:12px 0 6px}
+    .report-content p{margin:0 0 12px}
+    .report-content ul,.report-content ol{margin:0 0 12px;padding-left:22px}
+    .report-content li{margin-bottom:4px}
+    .report-content blockquote{
+      margin:0 0 12px;padding:10px 16px;
+      border-left:3px solid var(--accent);background:var(--accent-dim);border-radius:0 var(--radius) var(--radius) 0;
+      color:var(--text-sec)
     }
+    .report-content blockquote p{margin:0}
+    .report-content strong{font-weight:600;color:var(--text)}
+    .report-content em{font-style:italic}
+    .report-content hr{border:none;border-top:1px solid var(--border);margin:16px 0}
+    .report-content table{width:100%;border-collapse:collapse;margin:0 0 12px;font-size:.82rem}
+    .report-content thead th{background:var(--bg-card);padding:8px 10px;text-align:left;border-bottom:2px solid var(--border);font-weight:600;color:var(--text)}
+    .report-content tbody td{padding:8px 10px;border-bottom:1px solid var(--border-light)}
+    .report-content tbody tr:hover{background:var(--bg-card-hover)}
+    .report-content code{
+      background:var(--accent-dim);color:var(--accent);padding:2px 6px;border-radius:4px;
+      font-size:.82rem;font-family:'Consolas','Courier New',monospace
+    }
+    .report-content pre{
+      background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);
+      padding:14px;margin:0 0 12px;overflow-x:auto;font-size:.82rem;line-height:1.6
+    }
+    .report-content pre code{background:none;padding:0;color:var(--text)}
+    /* Streaming cursor */
+    .report-streaming::after{
+      content:'';display:inline-block;width:2px;height:1em;background:var(--accent);
+      margin-left:2px;vertical-align:text-bottom;
+      animation:blink 1s step-end infinite
+    }
+    @keyframes blink{50%{opacity:0}}
+
+    /* ── Details / FAQ ──────────────────────────────────────────────── */
+    details{margin:0}
+    details summary{
+      cursor:pointer;font-size:.88rem;font-weight:600;color:var(--text);
+      list-style:none;display:flex;align-items:center;gap:8px;user-select:none;
+      padding:4px 0;transition:color .2s
+    }
+    details summary:hover{color:var(--accent)}
+    details summary::before{
+      content:'';width:0;height:0;
+      border-left:5px solid var(--text-sec);border-top:4px solid transparent;border-bottom:4px solid transparent;
+      transition:transform .2s;flex-shrink:0
+    }
+    details[open] summary::before{transform:rotate(90deg)}
+    details>*:not(summary){margin-top:16px}
+    .info-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px;margin-top:4px}
+    .info-item{
+      background:var(--bg-subtle);border-radius:var(--radius-lg);padding:16px 18px;
+      border:1px solid var(--border)
+    }
+    .info-item h4{font-size:.82rem;font-weight:600;color:var(--accent);margin-bottom:8px}
+    .info-item p,.info-item li{font-size:.78rem;color:var(--text-sec);line-height:1.7}
+    .info-item ul{padding-left:18px}
+    .info-item li{margin-bottom:3px}
+    .step-list{counter-reset:step;list-style:none;padding:0}
+    .step-list li{
+      counter-increment:step;display:flex;gap:12px;margin-bottom:12px;
+      font-size:.82rem;color:var(--text-sec);line-height:1.7
+    }
+    .step-list li::before{
+      content:counter(step);background:var(--accent);color:#fff;
+      min-width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+      font-size:.73rem;font-weight:600;flex-shrink:0;margin-top:2px
+    }
+    .tag{
+      display:inline-block;padding:2px 8px;border-radius:6px;font-size:.73rem;font-weight:600;margin-right:4px
+    }
+    .tag-short{background:var(--red-dim);color:var(--red)}
+    .tag-long{background:var(--accent-dim);color:var(--accent)}
+    .tag-enh{background:var(--orange-dim);color:var(--orange)}
+
+    /* ── Refresh button ─────────────────────────────────────────────── */
+    .refresh-btn{
+      font-size:.73rem;color:var(--text-muted);cursor:pointer;
+      margin-left:auto;padding:4px 10px;border:1px solid var(--border);border-radius:6px;
+      background:none;font-family:inherit;transition:var(--transition)
+    }
+    .refresh-btn:hover{border-color:var(--accent);color:var(--accent)}
+
+    /* ── Scrollbar ──────────────────────────────────────────────────── */
     ::-webkit-scrollbar{width:5px;height:5px}
     ::-webkit-scrollbar-track{background:transparent}
-    ::-webkit-scrollbar-thumb{background:#d0b8e0;border-radius:10px}
-    .info-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px;margin-top:4px}
-    .info-item{background:rgba(243,234,248,.5);border-radius:14px;padding:14px 16px;border:1px solid #ead8f0}
-    .info-item h4{font-size:.84rem;font-weight:500;color:#b06db8;margin-bottom:6px}
-    .info-item p,.info-item li{font-size:.81rem;color:#6a5a80;line-height:1.65}
-    .info-item ul{padding-left:16px}
-    .step-list{counter-reset:step;list-style:none;padding:0}
-    .step-list li{counter-increment:step;display:flex;gap:10px;margin-bottom:10px;font-size:.83rem;color:#6a5a80;line-height:1.6}
-    .step-list li::before{content:counter(step);background:linear-gradient(135deg,#c994d4,#a87ac0);color:#fff;min-width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:.75rem;font-weight:500;flex-shrink:0;margin-top:1px}
-    .tag{display:inline-block;padding:2px 8px;border-radius:8px;font-size:.74rem;font-weight:500;margin-right:4px}
-    .tag-short{background:#fce4f0;color:#c2547a}
-    .tag-long{background:#e4eeff;color:#5578c2}
-    .tag-enh{background:#fef3e2;color:#c28840}
-    details summary{cursor:pointer;font-size:.88rem;font-weight:500;color:#b06db8;list-style:none;display:flex;align-items:center;gap:6px;user-select:none}
-    details summary::before{content:'▶';font-size:.7rem;transition:transform .2s}
-    details[open] summary::before{transform:rotate(90deg)}
-    details>*:not(summary){margin-top:14px}
-    /* 市场情绪 */
-    .sentiment-row{display:flex;gap:18px;flex-wrap:wrap;align-items:stretch;margin-bottom:20px}
-    .sentiment-score-box{
-      background:rgba(255,255,255,.78);border:1px solid #e8d5ea;border-radius:20px;
-      padding:20px 26px;display:flex;flex-direction:column;align-items:center;justify-content:center;
-      min-width:160px;box-shadow:0 4px 24px rgba(160,120,200,.10)
+    ::-webkit-scrollbar-thumb{background:var(--border-light);border-radius:3px}
+    ::-webkit-scrollbar-thumb:hover{background:var(--text-muted)}
+
+    /* ── Responsive ─────────────────────────────────────────────────── */
+    @media(max-width:640px){
+      .main{padding:16px 12px 32px}
+      .section{padding:16px}
+      .sentiment-grid{grid-template-columns:1fr}
+      .dim-grid{grid-template-columns:1fr}
+      .controls-grid{grid-template-columns:1fr}
+      .info-grid{grid-template-columns:1fr}
+      header{padding:0 16px}
     }
-    .sentiment-score-box .big-num{font-size:2.8rem;font-weight:600;line-height:1;color:#b06db8}
-    .sentiment-score-box .level{font-size:.82rem;color:#a08ab8;margin-top:4px}
-    .sentiment-dims{
-      background:rgba(255,255,255,.78);border:1px solid #e8d5ea;border-radius:20px;
-      padding:18px 22px;flex:1;min-width:260px;
-      box-shadow:0 4px 24px rgba(160,120,200,.10)
-    }
-    .sentiment-dims h3{font-size:.9rem;font-weight:500;color:#b06db8;margin-bottom:12px}
-    .dim-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:7px;font-size:.82rem}
-    .dim-row .dim-label{color:#8a6fa8}
-    .dim-bar-wrap{flex:1;height:6px;background:#ead8f0;border-radius:3px;margin:0 10px}
-    .dim-bar{height:6px;border-radius:3px;background:linear-gradient(90deg,#c994d4,#a87ac0);transition:width .4s}
-    .dim-val{color:#5a4a72;min-width:36px;text-align:right}
-    .sentiment-desc{font-size:.78rem;color:#a08ab8;margin-top:10px}
-    /* 龙虎榜 */
-    .lhb-card{background:rgba(255,255,255,.78);border:1px solid #e8d5ea;border-radius:20px;padding:20px 24px;margin-bottom:20px;box-shadow:0 4px 24px rgba(160,120,200,.10)}
-    .lhb-card h3{font-size:.92rem;font-weight:500;color:#b06db8;margin-bottom:4px;display:flex;align-items:center;gap:6px}
-    .lhb-badge{display:inline-block;padding:2px 9px;border-radius:10px;font-size:.73rem;background:#fce4f0;color:#c2547a;margin-left:6px}
-    #lhb-table{width:100%;border-collapse:collapse;font-size:.84rem;margin-top:10px}
-    #lhb-table th{background:linear-gradient(90deg,#f3eaf8,#eae8f5);padding:8px 8px;text-align:left;color:#8a6fa8;font-weight:500;font-size:.80rem;border-bottom:1px solid #d8c5e0}
-    #lhb-table td{padding:8px 8px;border-bottom:1px solid #f0e8f2}
-    #lhb-table tr:hover td{background:rgba(240,234,248,.5)}
-    .refresh-link{font-size:.76rem;color:#c994d4;cursor:pointer;margin-left:auto;padding:3px 10px;border:1px solid #d8c5e0;border-radius:8px;background:none;font-family:inherit}
-    .refresh-link:hover{background:rgba(200,148,212,.1)}
   </style>
 </head>
 <body>
 <header>
-  <h1>🌸 量化选股 · AI研报</h1>
-  <a href="/logout">登出 · {{ username }}</a>
+  <div class="logo"><span>&#9670;</span> 量化选股 · AI研报</div>
+  <div class="user-info">
+    <span>{{ username }}</span>
+    <a href="/logout">登出</a>
+  </div>
 </header>
 <div class="main">
 
-  <!-- 市场情绪评分 -->
-  <div class="sentiment-row" id="sentiment-row">
-    <div class="sentiment-score-box">
-      <div class="big-num" id="sent-score">--</div>
-      <div class="level" id="sent-level">加载中…</div>
+  <!-- Market Sentiment -->
+  <div class="section">
+    <div class="section-title">
+      <div class="icon icon-accent">&#9670;</div>
+      市场情绪
+      <button class="refresh-btn" onclick="loadSentiment()">&#8635; 刷新</button>
     </div>
-    <div class="sentiment-dims">
-      <h3>📊 7维市场情绪
-        <button class="refresh-link" onclick="loadSentiment()">↻ 刷新</button>
-      </h3>
-      <div id="sent-dims"><div style="color:#c0a8d0;font-size:.82rem">正在获取…</div></div>
-      <div class="sentiment-desc" id="sent-desc"></div>
+    <div class="sentiment-grid" id="sentiment-row">
+      <div class="sentiment-score-box">
+        <div class="big-num" id="sent-score">--</div>
+        <div class="level" id="sent-level">加载中...</div>
+        <div class="level-desc" id="sent-desc"></div>
+        <div class="level-desc" id="sent-date"></div>
+      </div>
+      <div id="sent-dims">
+        <div style="color:var(--text-muted);font-size:.82rem">正在获取...</div>
+      </div>
     </div>
   </div>
 
-  <!-- 龙虎榜 -->
-  <div class="lhb-card">
-    <h3>🏆 龙虎榜净买入 TOP 10
+  <!-- LHB -->
+  <div class="section">
+    <div class="section-title">
+      <div class="icon icon-orange">&#9670;</div>
+      龙虎榜净买入 TOP 10
       <span id="lhb-sentiment-badge" class="lhb-badge" style="display:none"></span>
-      <button class="refresh-link" onclick="loadLHB()">↻ 刷新</button>
-    </h3>
-    <div id="lhb-body"><div style="color:#c0a8d0;font-size:.82rem;padding:8px 0">正在加载…</div></div>
-  </div>
-
-  <!-- 运行选股 -->
-  <div class="card" style="margin-bottom:20px">
-    <h3>✨ 运行选股</h3>
-    <div class="ctrl-row">
-      <select id="sel-type">
-        <option value="long">中长线（综合评分）</option>
-        <option value="short">短线（动量信号）</option>
-        <option value="enhanced">增强版（基本面+技术）</option>
-      </select>
-      <label>推荐数量</label>
-      <input type="number" id="top-n" value="5" min="1" max="20" style="width:64px">
-      <button onclick="runSelector()">▶ 运行</button>
-      <button class="secondary" onclick="getReport()">📄 导出报告</button>
-      <button class="secondary" onclick="runGptAnalyze()" id="gpt-btn">🤖 {{ llm_display_name }} 分析</button>
+      <button class="refresh-btn" onclick="loadLHB()">&#8635; 刷新</button>
     </div>
+    <div id="lhb-body">
+      <div style="color:var(--text-muted);font-size:.82rem;padding:4px 0">正在加载...</div>
+    </div>
+  </div>
+
+  <!-- Selector Controls -->
+  <div class="section">
+    <div class="controls-grid">
+      <!-- Left: Stock Selection -->
+      <div class="control-group">
+        <div class="group-label">选股策略</div>
+        <div class="control-row">
+          <select id="sel-type">
+            <option value="long">中长线（综合评分）</option>
+            <option value="short">短线（动量信号）</option>
+            <option value="enhanced">增强版（基本面+技术）</option>
+          </select>
+          <label style="margin-left:4px">数量</label>
+          <input type="number" id="top-n" value="5" min="1" max="20" style="width:60px">
+        </div>
+        <div class="btn-group">
+          <button class="btn btn-primary" onclick="runSelector()">&#9654; 运行选股</button>
+          <button class="btn btn-secondary" onclick="getReport()">&#8681; 导出报告</button>
+          <button class="btn btn-secondary" onclick="runGptAnalyze()" id="gpt-btn">&#9733; {{ llm_display_name }} 分析</button>
+        </div>
+      </div>
+
+      <!-- Right: Individual Stock -->
+      <div class="control-group">
+        <div class="group-label">个股分析</div>
+        <div class="search-wrap">
+          <input type="text" id="stock-search" placeholder="输入股票代码或名称，如 600519 或 贵州茅台" autocomplete="off">
+          <div id="search-dropdown"></div>
+        </div>
+        <div>
+          <button class="btn btn-success" onclick="analyzeSingleStock()" id="analyze-btn">&#9654; 分析个股</button>
+        </div>
+      </div>
+    </div>
+
     <div id="status"></div>
-    <table id="results-table" style="display:none">
-      <thead><tr>
-        <th>代码</th><th>名称</th><th>评分</th><th>评级</th>
-        <th>现价</th><th>买入价</th><th>止损价</th><th>止盈价</th>
-      </tr></thead>
-      <tbody id="results-body"></tbody>
-    </table>
+
+    <div class="results-wrap">
+      <table id="results-table" style="display:none">
+        <thead><tr>
+          <th>代码</th><th>名称</th><th>评分</th><th>评级</th>
+          <th>现价</th><th>买入价</th><th>止损价</th><th>止盈价</th>
+        </tr></thead>
+        <tbody id="results-body"></tbody>
+      </table>
+    </div>
   </div>
 
-  <!-- GPT 深度研报 -->
-  <div class="card" id="gpt-card" style="display:none;margin-bottom:20px">
-    <h3>🤖 {{ llm_display_name }} 深度研报</h3>
-    <pre id="gpt-report" style="white-space:pre-wrap;line-height:1.7;font-size:.87rem;color:#5a4a72"></pre>
+  <!-- GPT Report -->
+  <div class="section" id="gpt-card" style="display:none">
+    <div class="section-title">
+      <div class="icon icon-green">&#9670;</div>
+      {{ llm_display_name }} 深度研报
+    </div>
+    <div class="report-content report-streaming" id="gpt-report"></div>
   </div>
 
-  <!-- 使用说明 -->
-  <div class="card" style="margin-bottom:16px">
+  <!-- Usage Guide -->
+  <div class="section">
     <details>
-      <summary>📖 使用说明</summary>
+      <summary>使用说明</summary>
       <ol class="step-list">
         <li>从下拉框选择策略类型：<span class="tag tag-short">短线</span><span class="tag tag-long">中长线</span><span class="tag tag-enh">增强版</span>，填写推荐数量（默认5只）。</li>
-        <li>点击 <strong>▶ 运行</strong>，系统自动扫描沪深300成分股（约250只主板蓝筹），根据历史K线计算技术指标并评分，完成后显示评分最高的 N 只。</li>
-        <li>点击 <strong>📄 导出报告</strong>，生成 Markdown 格式的选股报告并下载，文件名包含时间戳。</li>
-        <li>点击 <strong>🤖 {{ llm_display_name }} 分析</strong>，将选股结果交给 {{ llm_display_name }} 生成深度研报，包含产业逻辑、三情景价格、买入/止损/止盈建议，支持流式实时输出。</li>
-        <li>表格中的<strong>买入价 / 止损价 / 止盈价</strong>均由 ATR 动态计算（止损 = 现价 − 2×ATR，止盈 = 现价 + 3×ATR），仅供参考，不构成投资建议。</li>
+        <li>点击 <strong>运行选股</strong>，系统自动扫描沪深300成分股（约250只主板蓝筹），根据历史K线计算技术指标并评分，完成后显示评分最高的 N 只。</li>
+        <li>点击 <strong>导出报告</strong>，生成 Markdown 格式的选股报告并下载，文件名包含时间戳。</li>
+        <li>点击 <strong>{{ llm_display_name }} 分析</strong>，将选股结果交给 {{ llm_display_name }} 生成深度研报，包含产业逻辑、三情景价格、买入/止损/止盈建议，支持流式实时输出。</li>
+        <li>表格中的<strong>买入价 / 止损价 / 止盈价</strong>均由 ATR 动态计算（止损 = 现价 - 2xATR，止盈 = 现价 + 3xATR），仅供参考，不构成投资建议。</li>
       </ol>
       <div class="info-grid" style="margin-top:16px">
         <div class="info-item">
-          <h4>⚠️ 数据说明</h4>
+          <h4>数据说明</h4>
           <p>所有技术指标（RSI / MACD / KDJ / 布林带等）均基于<strong>历史收盘K线</strong>计算，并非实时 tick 数据。同一天内多次运行时，K线数据自动复用内存缓存，无需重复抓取。</p>
         </div>
         <div class="info-item">
-          <h4>🕐 建议使用时机</h4>
+          <h4>建议使用时机</h4>
           <ul>
             <li>收盘后（15:00 以后）当日K线已确认，结果最稳定</li>
             <li>次日开盘前复查，结合隔夜消息再决策</li>
@@ -245,12 +396,12 @@
           </ul>
         </div>
         <div class="info-item">
-          <h4>📊 评级说明</h4>
+          <h4>评级说明</h4>
           <ul>
-            <li><strong>A+</strong>（≥85分）：强烈关注</li>
-            <li><strong>A</strong>（≥70分）：值得关注</li>
-            <li><strong>B+</strong>（≥60分）：可操作</li>
-            <li><strong>B</strong>（≥50分）：观望为主</li>
+            <li><strong>A+</strong>（>=85分）：强烈关注</li>
+            <li><strong>A</strong>（>=70分）：值得关注</li>
+            <li><strong>B+</strong>（>=60分）：可操作</li>
+            <li><strong>B</strong>（>=50分）：观望为主</li>
             <li><strong>C</strong>（&lt;50分）：暂不参与</li>
           </ul>
         </div>
@@ -258,35 +409,35 @@
     </details>
   </div>
 
-  <!-- 选股策略说明 -->
-  <div class="card" style="margin-bottom:20px">
+  <!-- Strategy Details -->
+  <div class="section">
     <details>
-      <summary>🧮 选股策略说明</summary>
+      <summary>选股策略说明</summary>
       <div class="info-grid" style="margin-top:14px">
         <div class="info-item">
-          <h4><span class="tag tag-short">短线</span> 1–5 日动量策略（满分100）</h4>
+          <h4><span class="tag tag-short">短线</span> 1-5 日动量策略（满分100）</h4>
           <ul>
             <li><strong>RSI 20分</strong>：RSI &lt; 30 超卖 +20；RSI &lt; 40 偏低 +12</li>
             <li><strong>KDJ 20分</strong>：K/D 金叉且 J &lt; 50 +20；超卖区 +15</li>
             <li><strong>MACD 15分</strong>：DIF/DEA 金叉 +15；红柱扩张 +10</li>
             <li><strong>布林带 15分</strong>：价格触下轨 +15；中轨以下 +10</li>
-            <li><strong>量价共振 15分</strong>：放量上涨（量比≥1.5）+15</li>
+            <li><strong>量价共振 15分</strong>：放量上涨（量比>=1.5）+15</li>
             <li><strong>资金流 15分</strong>：主力净流入 &gt; 500万 +15</li>
           </ul>
-          <p style="margin-top:8px;color:#b06db8">推荐阈值：总分 ≥ 60 且买入信号 ≥ 2</p>
+          <p style="margin-top:8px;color:var(--accent)">推荐阈值：总分 >= 60 且买入信号 >= 2</p>
         </div>
         <div class="info-item">
-          <h4><span class="tag tag-long">中长线</span> 20–180 日趋势策略（满分100）</h4>
+          <h4><span class="tag tag-long">中长线</span> 20-180 日趋势策略（满分100）</h4>
           <ul>
             <li><strong>趋势 30分</strong>：MA5/MA20/MA60 多头排列</li>
             <li><strong>动量 15分</strong>：5日/20日收益率均为正</li>
-            <li><strong>OBV+量比 15分</strong>：OBV 20日上升 + 量比 0.8–2.0</li>
-            <li><strong>ADX 强度 10分</strong>：ADX &gt; 25 且 +DI &gt; −DI</li>
-            <li><strong>波动率 10分</strong>：年化波动 15–35%（适中）</li>
-            <li><strong>乖离率 10分</strong>：偏离 MA20 在 −10%~+15% 区间</li>
+            <li><strong>OBV+量比 15分</strong>：OBV 20日上升 + 量比 0.8-2.0</li>
+            <li><strong>ADX 强度 10分</strong>：ADX &gt; 25 且 +DI &gt; -DI</li>
+            <li><strong>波动率 10分</strong>：年化波动 15-35%（适中）</li>
+            <li><strong>乖离率 10分</strong>：偏离 MA20 在 -10%~+15% 区间</li>
             <li><strong>资金流 10分</strong>：主力净流入为正</li>
           </ul>
-          <p style="margin-top:8px;color:#b06db8">推荐阈值：总分 ≥ 70</p>
+          <p style="margin-top:8px;color:var(--accent)">推荐阈值：总分 >= 70</p>
         </div>
         <div class="info-item">
           <h4><span class="tag tag-enh">增强版</span> 综合基本面+技术面（满分100）</h4>
@@ -296,7 +447,7 @@
             <li><strong>DMI 信号优化</strong>：方向性运动指标二次确认</li>
             <li>适合中期持仓，兼顾安全边际与成长性</li>
           </ul>
-          <p style="margin-top:8px;color:#b06db8">推荐阈值：总分 ≥ 65</p>
+          <p style="margin-top:8px;color:var(--accent)">推荐阈值：总分 >= 65</p>
         </div>
       </div>
     </details>
@@ -306,13 +457,13 @@
 
 <script>
 let lastResults = [];
-const _llmName=document.getElementById('gpt-btn').textContent.replace(/^🤖\s*/,'').replace(/\s*分析$/,'');
+const _llmName=document.getElementById('gpt-btn').textContent.replace(/^\*\s*/,'').replace(/\s*分析$/,'');
 
-// ── 市场情绪 ────────────────────────────────────────────────────────────────
+// -- Market Sentiment --
 async function loadSentiment() {
   document.getElementById('sent-score').textContent = '--';
-  document.getElementById('sent-level').textContent = '加载中…';
-  document.getElementById('sent-dims').innerHTML = '<div style="color:#c0a8d0;font-size:.82rem">正在获取…</div>';
+  document.getElementById('sent-level').textContent = '加载中...';
+  document.getElementById('sent-dims').innerHTML = '<div style="color:var(--text-muted);font-size:.82rem">正在获取...</div>';
   try {
     const r = await fetch('/api/market/sentiment');
     const d = await r.json();
@@ -322,12 +473,19 @@ async function loadSentiment() {
     document.getElementById('sent-score').textContent = score != null ? score : '--';
     document.getElementById('sent-level').textContent = data.level || '';
     document.getElementById('sent-desc').textContent = data.description || '';
-    // 评分颜色
+    // 显示数据日期
+    const dateEl = document.getElementById('sent-date');
+    if (data.data_date) {
+      const today = new Date().toISOString().slice(0,10);
+      const label = data.data_date === today ? '今日数据' : data.data_date + ' 数据';
+      dateEl.textContent = label;
+    } else {
+      dateEl.textContent = '';
+    }
     const el = document.getElementById('sent-score');
-    if (score >= 60) el.style.color = '#e06080';
-    else if (score >= 40) el.style.color = '#b06db8';
-    else el.style.color = '#60a880';
-    // 维度条
+    if (score >= 60) el.style.color = 'var(--red)';
+    else if (score >= 40) el.style.color = 'var(--accent)';
+    else el.style.color = 'var(--green)';
     const dims = data.dimensions || {};
     const dimDefs = [
       { key: '涨跌比',    max: 100, unit: '%' },
@@ -335,64 +493,62 @@ async function loadSentiment() {
       { key: '涨停率%',   max: 3,   unit: '%' },
       { key: '强势股比%', max: 20,  unit: '%' },
     ];
-    let html = '';
+    let html = '<div class="dim-grid">';
     for (const def of dimDefs) {
       const val = dims[def.key];
       if (val == null) continue;
       const pct = Math.min(Math.max(val / def.max * 100, 0), 100);
-      html += `<div class="dim-row">
-        <span class="dim-label">${def.key}</span>
+      html += `<div class="dim-item">
+        <div class="dim-label"><span>${def.key}</span><span class="val">${val}${def.unit}</span></div>
         <div class="dim-bar-wrap"><div class="dim-bar" style="width:${pct.toFixed(1)}%"></div></div>
-        <span class="dim-val">${val}${def.unit}</span>
       </div>`;
     }
-    if (dims['样本数']) html += `<div class="sentiment-desc">样本：${dims['样本数']} 只股票</div>`;
-    document.getElementById('sent-dims').innerHTML = html || '<div style="color:#c0a8d0;font-size:.82rem">暂无维度数据</div>';
+    html += '</div>';
+    if (dims['样本数']) html += `<div style="font-size:.73rem;color:var(--text-muted);margin-top:8px">样本：${dims['样本数']} 只股票</div>`;
+    document.getElementById('sent-dims').innerHTML = html || '<div style="color:var(--text-muted);font-size:.82rem">暂无维度数据</div>';
   } catch(e) {
     document.getElementById('sent-level').textContent = '加载失败';
   }
 }
 
-// ── 龙虎榜 ──────────────────────────────────────────────────────────────────
+// -- LHB --
 async function loadLHB() {
-  document.getElementById('lhb-body').innerHTML = '<div style="color:#c0a8d0;font-size:.82rem;padding:8px 0">正在拉取…</div>';
+  document.getElementById('lhb-body').innerHTML = '<div style="color:var(--text-muted);font-size:.82rem;padding:4px 0">正在拉取...</div>';
   document.getElementById('lhb-sentiment-badge').style.display = 'none';
   try {
     const r = await fetch('/api/lhb/top');
     const d = await r.json();
     if (d.status !== 'success') {
-      document.getElementById('lhb-body').innerHTML = `<div style="color:#e06080;font-size:.82rem">${d.message}</div>`;
+      document.getElementById('lhb-body').innerHTML = `<div style="color:var(--red);font-size:.82rem">${d.message}</div>`;
       return;
     }
     const { top, sentiment } = d.data;
-    // 情绪徽章
     const badge = document.getElementById('lhb-sentiment-badge');
     if (sentiment && sentiment.sentiment !== '无数据') {
-      badge.textContent = `${sentiment.emoji} ${sentiment.sentiment} ${sentiment.score}分`;
+      badge.textContent = `${sentiment.sentiment} ${sentiment.score}分`;
       badge.style.display = '';
     }
     if (!top || !top.length) {
-      document.getElementById('lhb-body').innerHTML = '<div style="color:#c0a8d0;font-size:.82rem;padding:8px 0">今日暂无龙虎榜数据（非交易日或数据尚未公布）</div>';
+      document.getElementById('lhb-body').innerHTML = '<div style="color:var(--text-muted);font-size:.82rem;padding:4px 0">今日暂无龙虎榜数据（非交易日或数据尚未公布）</div>';
       return;
     }
-    let html = '<table id="lhb-table"><thead><tr><th>#</th><th>代码</th><th>名称</th><th>净买入（万元）</th><th>买入</th><th>卖出</th><th>涨跌幅</th></tr></thead><tbody>';
+    let html = '<div class="lhb-table-wrap"><table><thead><tr><th>#</th><th>代码</th><th>名称</th><th>净买入（万元）</th><th>买入</th><th>卖出</th><th>涨跌幅</th></tr></thead><tbody>';
     top.forEach((s, i) => {
       const net = (s.net_amount / 10000).toFixed(1);
       const buy = (s.buy_amount / 10000).toFixed(1);
       const sell = (s.sell_amount / 10000).toFixed(1);
       const chg = s.change_pct != null ? s.change_pct.toFixed(2) : '--';
       const cls = s.change_pct >= 0 ? 'pos' : 'neg';
-      html += `<tr><td>${i+1}</td><td>${s.code}</td><td>${s.name}</td><td style="color:#c2547a;font-weight:500">${net}</td><td>${buy}</td><td>${sell}</td><td class="${cls}">${chg}%</td></tr>`;
+      html += `<tr><td>${i+1}</td><td>${s.code}</td><td>${s.name}</td><td class="pos" style="font-weight:600">${net}</td><td>${buy}</td><td>${sell}</td><td class="${cls}">${chg}%</td></tr>`;
     });
-    html += '</tbody></table>';
-    if (sentiment && sentiment.description) html += `<div style="font-size:.77rem;color:#a08ab8;margin-top:8px">${sentiment.description}</div>`;
+    html += '</tbody></table></div>';
+    if (sentiment && sentiment.description) html += `<div style="font-size:.75rem;color:var(--text-muted);margin-top:10px">${sentiment.description}</div>`;
     document.getElementById('lhb-body').innerHTML = html;
   } catch(e) {
-    document.getElementById('lhb-body').innerHTML = `<div style="color:#e06080;font-size:.82rem">${e.message}</div>`;
+    document.getElementById('lhb-body').innerHTML = `<div style="color:var(--red);font-size:.82rem">${e.message}</div>`;
   }
 }
 
-// 页面加载时自动拉取
 window.addEventListener('DOMContentLoaded', () => {
   loadSentiment();
   loadLHB();
@@ -401,22 +557,26 @@ window.addEventListener('DOMContentLoaded', () => {
 async function runSelector(){
   const type=document.getElementById('sel-type').value;
   const top_n=parseInt(document.getElementById('top-n').value)||5;
-  document.getElementById('status').textContent='⏳ 选股中，请稍候…';
+  document.getElementById('status').textContent='选股中，请稍候...';
   document.getElementById('results-table').style.display='none';
   lastResults=[];
 
   const r=await fetch('/api/selector/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type,top_n})});
   const d=await r.json();
-  if(d.status!=='success'){document.getElementById('status').textContent='❌ '+d.message;return;}
+  if(d.status!=='success'){document.getElementById('status').textContent='Error: '+d.message;return;}
 
   lastResults=d.data||[];
-  document.getElementById('status').textContent=`✅ ${d.timestamp}  共推荐 ${lastResults.length} 只`;
+  document.getElementById('status').textContent=`${d.timestamp}  共推荐 ${lastResults.length} 只`;
+  renderResults(lastResults);
+}
+
+function renderResults(results){
   const tbody=document.getElementById('results-body');
-  tbody.innerHTML=lastResults.map(s=>`
+  tbody.innerHTML=results.map(s=>`
     <tr>
-      <td>${s.code}</td>
+      <td style="font-family:'Consolas','Courier New',monospace;color:var(--accent)">${s.code}</td>
       <td>${s.name||'-'}</td>
-      <td>${s.score??'-'}</td>
+      <td style="font-weight:600">${s.score??'-'}</td>
       <td><span class="badge badge-${(s.rating||'').replace('+','\\+')||'C'}">${s.rating||'-'}</span></td>
       <td class="${(s.change_pct||0)>=0?'pos':'neg'}">${s.price??'-'}</td>
       <td>${s.buy_price??'-'}</td>
@@ -427,9 +587,8 @@ async function runSelector(){
 }
 
 async function getReport(){
-  const pre=document.getElementById('gpt-report');
-  const content=(pre.textContent||'').trim();
-  if(!content){alert('请先运行 GPT 分析生成深度研报');return;}
+  const content=(_gptRawText||'').trim();
+  if(!content){alert('请先运行 AI 分析生成深度研报');return;}
   const selEl=document.getElementById('sel-type');
   const strategyLabel=selEl.options[selEl.selectedIndex].text.replace(/（.+/,'');
   const now=new Date();
@@ -449,13 +608,18 @@ async function getReport(){
   setTimeout(()=>{document.body.removeChild(a);URL.revokeObjectURL(url);},100);
 }
 
+// -- GPT raw text (kept for export) --
+let _gptRawText='';
+
 async function runGptAnalyze(){
   if(!lastResults.length){alert('请先运行选股');return;}
   const btn=document.getElementById('gpt-btn');
   const card=document.getElementById('gpt-card');
-  const pre=document.getElementById('gpt-report');
-  btn.disabled=true; btn.textContent='⏳ '+_llmName+'分析中…';
-  pre.textContent='';
+  const el=document.getElementById('gpt-report');
+  btn.disabled=true; btn.textContent=_llmName+'分析中...';
+  _gptRawText='';
+  el.innerHTML='';
+  el.classList.add('report-streaming');
   card.style.display='';
   card.scrollIntoView({behavior:'smooth',block:'start'});
   try{
@@ -464,19 +628,105 @@ async function runGptAnalyze(){
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({stocks:lastResults,stream:true})
     });
-    if(!r.ok){pre.textContent='❌ 请求失败: '+r.status;return;}
+    if(!r.ok){el.innerHTML='<p>请求失败: '+r.status+'</p>';return;}
     const reader=r.body.getReader();
     const decoder=new TextDecoder();
+    let renderTimer=null;
+    const render=()=>{
+      el.innerHTML=marked.parse(_gptRawText);
+      el.scrollTop=el.scrollHeight;
+    };
     while(true){
       const {done,value}=await reader.read();
       if(done) break;
-      pre.textContent+=decoder.decode(value,{stream:true});
-      pre.parentElement.scrollTop=pre.parentElement.scrollHeight;
+      _gptRawText+=decoder.decode(value,{stream:true});
+      // throttle rendering to every 200ms
+      if(!renderTimer){
+        renderTimer=setTimeout(()=>{render();renderTimer=null;},200);
+      }
     }
+    render(); // final render
   }catch(e){
-    pre.textContent='❌ '+e.message;
+    el.innerHTML='<p>Error: '+e.message+'</p>';
   }finally{
-    btn.disabled=false; btn.textContent='🤖 '+_llmName+' 分析';
+    el.classList.remove('report-streaming');
+    btn.disabled=false; btn.textContent='* '+_llmName+' 分析';
+  }
+}
+
+// -- Stock Search --
+let _searchTimer=null;
+let _selectedCode='';
+
+document.getElementById('stock-search').addEventListener('input',function(){
+  clearTimeout(_searchTimer);
+  const q=this.value.trim();
+  if(q.length<1){document.getElementById('search-dropdown').style.display='none';return;}
+  _searchTimer=setTimeout(()=>fetchSearchSuggestions(q),300);
+});
+
+document.getElementById('stock-search').addEventListener('keydown',function(e){
+  if(e.key==='Enter'){e.preventDefault();analyzeSingleStock();}
+});
+
+document.addEventListener('click',function(e){
+  if(!e.target.closest('#stock-search')&&!e.target.closest('#search-dropdown')){
+    document.getElementById('search-dropdown').style.display='none';
+  }
+});
+
+async function fetchSearchSuggestions(q){
+  try{
+    const r=await fetch('/api/stock/search?q='+encodeURIComponent(q));
+    const d=await r.json();
+    if(d.status!=='success'||!d.data||!d.data.length){
+      document.getElementById('search-dropdown').style.display='none';return;
+    }
+    const dd=document.getElementById('search-dropdown');
+    dd.innerHTML=d.data.map(s=>
+      `<div class="search-item" onclick="selectStock('${s.code}','${(s.name||'').replace(/'/g,"\\'")}')">
+        <span><span class="si-code">${s.code}</span><span class="si-name">${s.name||''}</span></span>
+        ${s.price!=null?'<span class="si-price">&yen;'+s.price.toFixed(2)+'</span>':''}
+      </div>`
+    ).join('');
+    dd.style.display='';
+  }catch(e){}
+}
+
+function selectStock(code,name){
+  document.getElementById('stock-search').value=code+' '+name;
+  _selectedCode=code;
+  document.getElementById('search-dropdown').style.display='none';
+}
+
+async function analyzeSingleStock(){
+  const input=document.getElementById('stock-search').value.trim();
+  let code=_selectedCode||input.split(/\s+/)[0];
+  if(!code||code.length<4){alert('请输入或选择一只股票');return;}
+  code=code.padStart(6,'0');
+
+  const type=document.getElementById('sel-type').value;
+  const btn=document.getElementById('analyze-btn');
+  btn.disabled=true; btn.textContent='分析中...';
+  document.getElementById('status').textContent='正在分析 '+code+'，请稍候...';
+
+  try{
+    const r=await fetch('/api/stock/analyze',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({code,type})
+    });
+    const d=await r.json();
+    if(d.status!=='success'){
+      document.getElementById('status').textContent='Error: '+(d.message||'分析失败');return;
+    }
+    lastResults=d.data||[];
+    document.getElementById('status').textContent=
+      d.timestamp+'  个股分析：'+(lastResults.length?lastResults[0].name+'('+code+')':code);
+    renderResults(lastResults);
+  }catch(e){
+    document.getElementById('status').textContent='Error: '+e.message;
+  }finally{
+    btn.disabled=false; btn.textContent='▶ 分析个股';
   }
 }
 </script>

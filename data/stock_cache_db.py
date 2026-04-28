@@ -371,9 +371,9 @@ class StockCache:
         cutoff = datetime.now() - timedelta(minutes=max_age_minutes)
         cursor.execute('SELECT * FROM stocks WHERE code = ? AND update_time > ?', (code, cutoff))
         row = cursor.fetchone()
-        
+
         if row:
-            return {
+            result = {
                 'code': row[0],
                 'name': row[1],
                 'price': row[2],
@@ -382,6 +382,14 @@ class StockCache:
                 'amount': row[5],
                 'update_time': row[6]
             }
+            # 名称缺失时补填
+            if not result['name']:
+                name = self._lookup_name(code)
+                if name:
+                    result['name'] = name
+                    cursor.execute("UPDATE stocks SET name=? WHERE code=?", (name, code))
+                    self.conn.commit()
+            return result
 
         # 缓存 miss：实时拉取并写入缓存（掘金→东方财富→腾讯）
         data = self._fetch_diggold_realtime(code)
@@ -390,9 +398,44 @@ class StockCache:
         if not data:
             data = self._fetch_tencent_realtime(code)
         if data:
+            # 腾讯源无名称，补填
+            if not data.get('name'):
+                name = self._lookup_name(code)
+                if name:
+                    data['name'] = name
             self.save_stocks([data])
             return data
         return None
+
+    def _lookup_name(self, code: str) -> str:
+        """查询股票名称：优先 stocks 表全量查，其次东方财富接口"""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT name FROM stocks WHERE code=? AND name IS NOT NULL AND name!='' LIMIT 1", (code,))
+        r = cursor.fetchone()
+        if r and r[0]:
+            return r[0]
+        return self._fetch_name_from_eastmoney(code)
+
+    def _fetch_name_from_eastmoney(self, code: str) -> str:
+        """从东方财富接口获取股票名称"""
+        try:
+            import urllib.request, urllib.parse, json as _json
+            secid = '1.' + code if code.startswith('6') else '0.' + code
+            url = ('https://push2.eastmoney.com/api/qt/ulist.np/get?'
+                   + urllib.parse.urlencode({
+                       'fltt': '2', 'invt': '2',
+                       'fields': 'f14',
+                       'secids': secid,
+                   }))
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                obj = _json.loads(resp.read().decode('utf-8', 'ignore'))
+            diff = obj.get('data', {}).get('diff', [])
+            if diff:
+                return diff[0].get('f14', '')
+        except Exception:
+            pass
+        return ''
 
     def _fetch_realtime(self, code: str) -> Optional[Dict]:
         """缓存 miss 时，通过东方财富 HTTPS 接口实时获取股票基础信息"""
@@ -551,12 +594,19 @@ class StockCache:
     def save_lhb(self, code: str, data: Dict):
         """保存龙虎榜数据"""
         cursor = self.conn.cursor()
+        name = data.get('name', '')
+        # 确保 name 列存在
+        cursor.execute("PRAGMA table_info(lhb)")
+        columns = [col[1] for col in cursor.fetchall()]
+        if 'name' not in columns:
+            cursor.execute("ALTER TABLE lhb ADD COLUMN name TEXT DEFAULT ''")
         cursor.execute('''
             INSERT OR REPLACE INTO lhb
-            (code, buy_amount, sell_amount, net_amount, update_time)
-            VALUES (?, ?, ?, ?, ?)
+            (code, name, buy_amount, sell_amount, net_amount, update_time)
+            VALUES (?, ?, ?, ?, ?, ?)
         ''', (
             code,
+            name,
             data.get('buy_amount', 0),
             data.get('sell_amount', 0),
             data.get('net_amount', 0),
