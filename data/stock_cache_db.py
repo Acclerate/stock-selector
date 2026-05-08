@@ -408,13 +408,19 @@ class StockCache:
         return None
 
     def _lookup_name(self, code: str) -> str:
-        """查询股票名称：优先 stocks 表全量查，其次东方财富接口"""
+        """查询股票名称：stocks表 → 东方财富 → 新浪 → akshare"""
         cursor = self.conn.cursor()
         cursor.execute("SELECT name FROM stocks WHERE code=? AND name IS NOT NULL AND name!='' LIMIT 1", (code,))
         r = cursor.fetchone()
         if r and r[0]:
             return r[0]
-        return self._fetch_name_from_eastmoney(code)
+        name = self._fetch_name_from_eastmoney(code)
+        if name:
+            return name
+        name = self._fetch_name_from_sina(code)
+        if name:
+            return name
+        return self._fetch_name_from_akshare(code)
 
     def _fetch_name_from_eastmoney(self, code: str) -> str:
         """从东方财富接口获取股票名称"""
@@ -436,6 +442,43 @@ class StockCache:
         except Exception:
             pass
         return ''
+
+    def _fetch_name_from_sina(self, code: str) -> str:
+        """从新浪财经接口获取股票名称"""
+        try:
+            import urllib.request
+            symbol = ('sh' if code.startswith('6') else 'sz') + code
+            url = f'http://hq.sinajs.cn/list={symbol}'
+            req = urllib.request.Request(url, headers={
+                'User-Agent': 'Mozilla/5.0',
+                'Referer': 'http://finance.sina.com.cn',
+            })
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                text = resp.read().decode('gbk', 'ignore')
+            if 'var hq_str_' in text:
+                data_str = text.split('"')[1]
+                fields = data_str.split(',')
+                if len(fields) >= 1 and fields[0]:
+                    return fields[0]
+        except Exception:
+            pass
+        return ''
+
+    def _fetch_name_from_akshare(self, code: str) -> str:
+        """从 akshare 获取股票名称（首次较慢，结果会缓存到内存）"""
+        try:
+            import akshare as ak
+            if not hasattr(self, '_akshare_name_cache'):
+                df = ak.stock_zh_a_spot_em()
+                if df is not None and not df.empty:
+                    self._akshare_name_cache = dict(
+                        zip(df['代码'].astype(str), df['名称'].astype(str))
+                    )
+                else:
+                    self._akshare_name_cache = {}
+            return self._akshare_name_cache.get(code, '')
+        except Exception:
+            return ''
 
     def _fetch_realtime(self, code: str) -> Optional[Dict]:
         """缓存 miss 时，通过东方财富 HTTPS 接口实时获取股票基础信息"""

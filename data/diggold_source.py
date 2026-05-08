@@ -24,6 +24,7 @@ _DIGGOLD_TOKEN = os.environ.get('DIGGOLD_TOKEN', '')
 
 _AVAILABLE = False
 _init_error = None
+_terminal_online = None  # None=未检测, True/False=已检测
 
 try:
     from gm.api import set_token, history, history_n, get_instruments
@@ -49,7 +50,18 @@ class DiggoldSource:
 
     @staticmethod
     def is_available() -> bool:
-        return _AVAILABLE
+        global _terminal_online
+        if not _AVAILABLE:
+            return False
+        if _terminal_online is None:
+            try:
+                df = get_instruments(exchanges=['SHSE'], sec_types=1, df=True)
+                _terminal_online = df is not None and not df.empty
+            except Exception:
+                _terminal_online = False
+            if not _terminal_online:
+                print('⚠️ 掘金终端不可达，跳过掘金数据源', flush=True)
+        return _terminal_online
 
     @staticmethod
     def _code_to_symbol(code: str) -> str:
