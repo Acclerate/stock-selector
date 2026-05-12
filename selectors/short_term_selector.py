@@ -39,14 +39,14 @@ class ShortTermSelector:
         self.indicators = ShortTermIndicators()
         
     def get_index_stocks(self) -> List[str]:
-        """从沪深300成分股中获取扫描范围，过滤创业板和科创板"""
+        """从沪深300+中证500成分股中获取扫描范围，过滤创业板和科创板"""
         import akshare as ak
         import sys, os
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'data'))
         try:
-            from config import SCAN_INDEX
+            from config import SCAN_INDICES
         except Exception:
-            SCAN_INDEX = "000300"
+            SCAN_INDICES = ["000300", "000905"]
 
         def _filter(codes):
             seen = set()
@@ -58,30 +58,35 @@ class ShortTermSelector:
                 result.append(c)
             return result
 
-        # 方案1: 东方财富成分股接口（稳定，无需访问中证官网）
-        try:
-            print(f"获取{SCAN_INDEX}成分股（东方财富）...", flush=True)
-            df = ak.index_stock_cons(symbol=SCAN_INDEX)
-            codes = df['品种代码'].astype(str).str.zfill(6).tolist()
-            result = _filter(codes)
-            print(f"✅ 获取到 {len(result)} 只成分股", flush=True)
-            return result
-        except Exception as e:
-            print(f"⚠️ 东方财富成分股失败: {e}", flush=True)
+        all_codes = []
+        for idx in SCAN_INDICES:
+            idx_name = {"000300": "沪深300", "000905": "中证500"}.get(idx, idx)
+            # 方案1: 东方财富
+            try:
+                print(f"获取{idx_name}({idx})成分股（东方财富）...", flush=True)
+                df = ak.index_stock_cons(symbol=idx)
+                codes = df['品种代码'].astype(str).str.zfill(6).tolist()
+                all_codes.extend(codes)
+                print(f"  ✅ {idx_name}: {len(codes)} 只", flush=True)
+                continue
+            except Exception as e:
+                print(f"  ⚠️ 东方财富失败: {e}", flush=True)
+            # 方案2: 中证官网
+            try:
+                print(f"获取{idx_name}({idx})成分股（中证官网）...", flush=True)
+                df = ak.index_stock_cons_weight_csindex(symbol=idx)
+                codes = df['成分券代码'].astype(str).str.zfill(6).tolist()
+                all_codes.extend(codes)
+                print(f"  ✅ {idx_name}: {len(codes)} 只", flush=True)
+            except Exception as e:
+                print(f"  ⚠️ 中证官网失败: {e}", flush=True)
 
-        # 方案2: 中证指数官网（原方案，可能超时）
-        try:
-            print(f"获取{SCAN_INDEX}成分股（中证官网）...", flush=True)
-            df = ak.index_stock_cons_weight_csindex(symbol=SCAN_INDEX)
-            codes = df['成分券代码'].astype(str).str.zfill(6).tolist()
-            result = _filter(codes)
-            print(f"✅ 获取到 {len(result)} 只成分股", flush=True)
-            return result
-        except Exception as e:
-            print(f"⚠️ 中证官网成分股失败: {e}", flush=True)
-
-        print("❌ 所有成分股数据源均失败", flush=True)
-        return []
+        result = _filter(all_codes)
+        if result:
+            print(f"✅ 合计获取到 {len(result)} 只主板成分股", flush=True)
+        else:
+            print("❌ 所有成分股数据源均失败", flush=True)
+        return result
     
     def analyze_single_stock(self, code: str) -> Dict:
         """
@@ -124,131 +129,125 @@ class ShortTermSelector:
 
             current_price = float(stock_info.get('price', df['close'].iloc[-1]))
 
-            # ====== 1. RSI超卖反弹 (20分) ======
+            # ====== 1. RSI超卖反弹 (20分, 连续评分) ======
             _log("RSI+KDJ+MACD+布林带评分...")
             rsi = self.indicators.calc_rsi(df)
             rsi_now = rsi.iloc[-1]
 
-            rsi_score = 0
+            # 连续评分: RSI=30→20分, RSI=50→10分, RSI=70→0分, RSI>80→负分
+            rsi_score = float(np.clip((70 - rsi_now) / 40, -0.25, 1.0) * 20)
             rsi_signal = None
             if rsi_now < 30:
-                rsi_score = 20
                 rsi_signal = f'RSI超卖 ({rsi_now:.0f})'
                 buy_signals.append(rsi_signal)
                 signals.append('RSI超卖')
-            elif rsi_now < 40:
-                rsi_score = 12
-                rsi_signal = f'RSI偏低 ({rsi_now:.0f})'
-            elif 40 <= rsi_now <= 60:
-                rsi_score = 5
             elif rsi_now > 70:
-                rsi_score = 0
                 rsi_signal = f'RSI超买 ({rsi_now:.0f})'
                 sell_signals.append(rsi_signal)
 
             score += rsi_score
             details['rsi'] = {
-                'score': rsi_score,
+                'score': round(rsi_score, 1),
                 'value': rsi_now,
                 'signal': rsi_signal
             }
 
-            # ====== 2. KDJ金叉 (20分) ======
+            # ====== 2. KDJ金叉 (20分, 连续评分) ======
             k, d, j = self.indicators.calc_kdj(df)
             kdj_result = self.indicators.detect_kdj_cross(k, d, j)
+            j_cur = kdj_result['j']
 
-            kdj_score = 0
-            if kdj_result['golden_cross'] and kdj_result['j'] < 50:
-                kdj_score = 20
-                buy_signals.append(f"KDJ金叉 (K={kdj_result['k']:.0f}, J={kdj_result['j']:.0f})")
+            # 基础分: J=20→15分, J=80→-5分
+            j_score = float(np.clip((80 - j_cur) / 60, -0.33, 1.0) * 15)
+            # 金叉/死叉调整
+            cross_adj = 5 if kdj_result['golden_cross'] else (-5 if kdj_result['dead_cross'] else 0)
+            kdj_score = float(np.clip(j_score + cross_adj, -10, 20))
+
+            if kdj_result['golden_cross']:
+                buy_signals.append(f"KDJ金叉 (K={kdj_result['k']:.0f}, J={j_cur:.0f})")
             elif kdj_result['oversold']:
-                kdj_score = 15
-                buy_signals.append(f"KDJ超卖 (J={kdj_result['j']:.0f})")
-            elif kdj_result['dead_cross'] and kdj_result['j'] > 70:
-                kdj_score = -10
-                sell_signals.append(f"KDJ死叉 (K={kdj_result['k']:.0f}, J={kdj_result['j']:.0f})")
+                buy_signals.append(f"KDJ超卖 (J={j_cur:.0f})")
+            if kdj_result['dead_cross'] and j_cur > 70:
+                sell_signals.append(f"KDJ死叉 (K={kdj_result['k']:.0f}, J={j_cur:.0f})")
             elif kdj_result['overbought']:
-                kdj_score = -5
-                sell_signals.append(f"KDJ超买 (J={kdj_result['j']:.0f})")
-            elif kdj_result['score'] > 0:
-                kdj_score = kdj_result['score']
-
-            score += max(0, kdj_score)  # 负分不计入总分
+                sell_signals.append(f"KDJ超买 (J={j_cur:.0f})")
             kdj_signal = kdj_result['signals'][0] if kdj_result['signals'] else ''
             if kdj_signal:
                 signals.append(kdj_signal)
 
+            score += kdj_score
             details['kdj'] = {
-                'score': max(0, kdj_score),
+                'score': round(kdj_score, 1),
                 'k': kdj_result['k'],
                 'd': kdj_result['d'],
-                'j': kdj_result['j'],
+                'j': j_cur,
                 'signal': kdj_signal,
                 'golden_cross': kdj_result['golden_cross'],
                 'death_cross': kdj_result['dead_cross']
             }
 
-            # ====== 3. MACD信号 (15分) ======
+            # ====== 3. MACD信号 (15分, 连续评分) ======
             dif, dea, macd_hist = self.indicators.calc_macd_short(df)
             macd_result = self.indicators.detect_macd_cross(dif, dea, macd_hist)
+            hist_cur = macd_result['histogram']
+            hist_prev = float(macd_hist.iloc[-2]) if len(macd_hist) > 1 else hist_cur
 
-            macd_score = 0
-            macd_signals = macd_result['signals']
-            macd_signal = macd_signals[0] if macd_signals else ''
+            # 连续评分: 柱状图方向和动量
+            if current_price > 0:
+                scale = current_price * 0.005
+                hist_norm = hist_cur / scale if scale else 0
+                hist_delta = (hist_cur - hist_prev) / scale if scale else 0
+                macd_score = float(np.clip(hist_norm * 2 + hist_delta * 3, -10, 15))
+            else:
+                macd_score = 0.0
+
+            macd_signal = macd_result['signals'][0] if macd_result['signals'] else ''
             if macd_result['golden_cross']:
-                macd_score = 15
+                macd_score = max(macd_score, 12.0)
                 buy_signals.append(f"MACD金叉 (DIF={macd_result['dif']:.3f})")
-            elif any('红柱扩张' in s for s in macd_signals):
-                macd_score = 10
+            elif hist_cur < 0 and macd_result['dif'] < macd_result['dea']:
+                macd_score = min(macd_score, -3.0)
+                sell_signals.append(f"MACD空头 (DIF={macd_result['dif']:.3f})")
+            elif hist_cur > 0 and hist_cur > hist_prev:
                 buy_signals.append("MACD红柱扩张")
-            elif macd_result['histogram'] < 0 and macd_result['dif'] < macd_result['dea']:
-                macd_score = -10
-                sell_signals.append(f"MACD死叉 (DIF={macd_result['dif']:.3f})")
-            elif any('红柱' in s for s in macd_signals):
-                macd_score = 5
-            elif macd_result['histogram'] > 0 and macd_result['dif'] > macd_result['dea']:
-                macd_score = 8  # MACD多头
 
-            score += max(0, macd_score)
+            score += macd_score
             if macd_signal:
                 signals.append(macd_signal)
 
             details['macd'] = {
-                'score': max(0, macd_score),
+                'score': round(macd_score, 1),
                 'dif': macd_result['dif'],
                 'dea': macd_result['dea'],
-                'macd_hist': macd_result['histogram'],
+                'macd_hist': hist_cur,
                 'signal': macd_signal,
                 'golden_cross': macd_result['golden_cross'],
-                'death_cross': macd_result['histogram'] < 0 and macd_result['dif'] < macd_result['dea']
+                'death_cross': hist_cur < 0 and macd_result['dif'] < macd_result['dea']
             }
 
-            # ====== 4. 布林带信号 (15分) ======
+            # ====== 4. 布林带信号 (15分, 连续评分) ======
             upper, middle, lower = self.indicators.calc_bollinger(df)
             boll_result = self.indicators.detect_bollinger_signal(df, upper, middle, lower)
+            boll_position = boll_result['price_position']  # 0~1 (lower~upper)
 
-            boll_score = 0
-            boll_signals = boll_result['signals']
-            boll_signal = boll_signals[0] if boll_signals else ''
-            boll_position_pct = boll_result['price_position'] * 100
-            if any('下轨' in s for s in boll_signals):
-                boll_score = 15
+            # 连续评分: 下轨(0%)→15分, 中轨(50%)→5分, 上轨(100%)→-5分
+            boll_score = float(np.clip((1 - boll_position) * 15 - boll_position * 5, -5, 15))
+            boll_position_pct = boll_position * 100
+
+            boll_signal = boll_result['signals'][0] if boll_result['signals'] else ''
+            if boll_position < 0.1:
                 buy_signals.append(f"布林下轨支撑 (位置{boll_position_pct:.0f}%)")
-            elif any('中轨' in s for s in boll_signals):
-                boll_score = 10
+            elif boll_position < 0.4:
                 buy_signals.append("布林中轨支撑")
-            elif any('上轨' in s for s in boll_signals):
-                boll_score = -5
+            elif boll_position > 0.9:
                 sell_signals.append("布林触及上轨")
-            elif boll_position_pct < 30:
-                boll_score = 8  # 偏下轨
 
-            score += max(0, boll_score)
+            score += boll_score
             if boll_signal:
                 signals.append(boll_signal)
 
             details['bollinger'] = {
-                'score': max(0, boll_score),
+                'score': round(boll_score, 1),
                 'upper': boll_result['upper'],
                 'middle': boll_result['middle'],
                 'lower': boll_result['lower'],
@@ -257,38 +256,35 @@ class ShortTermSelector:
                 'signal': boll_signal
             }
 
-            # ====== 5. 量价异动 (15分) ======
+            # ====== 5. 量价异动 (15分, 连续评分) ======
             volume_surge = self.indicators.detect_volume_surge(df, ratio=1.5)
-
-            volume_score = 0
-            vol_signals = volume_surge['signals']
-            vol_signal = vol_signals[0] if vol_signals else ''
             vol_ratio = volume_surge['volume_ratio']
             price_up = volume_surge['price_up']
-            if any('放量上涨' in s for s in vol_signals):
-                volume_score = 15
-                buy_signals.append(f"放量突破 (量比{vol_ratio:.1f})")
-            elif vol_ratio > 1.5 and price_up:
-                volume_score = 12
-                buy_signals.append(f"温和放量 (量比{vol_ratio:.1f})")
-            elif vol_ratio > 1.5 and not price_up:
-                volume_score = -10
-                sell_signals.append(f"放量下跌 (量比{vol_ratio:.1f})")
-            elif any('缩量' in s for s in vol_signals) and price_up:
-                volume_score = 5
 
-            score += max(0, volume_score)
+            # 连续评分: 量比与价格方向组合
+            if price_up:
+                volume_score = float(np.clip((vol_ratio - 0.5) / 1.5 * 15, 0, 15))
+            else:
+                volume_score = float(np.clip(-(vol_ratio - 1.0) / 1.0 * 10, -10, 5))
+
+            vol_signal = volume_surge['signals'][0] if volume_surge['signals'] else ''
+            if vol_ratio > 1.5 and price_up:
+                buy_signals.append(f"放量突破 (量比{vol_ratio:.1f})")
+            elif vol_ratio > 1.5 and not price_up:
+                sell_signals.append(f"放量下跌 (量比{vol_ratio:.1f})")
+
+            score += volume_score
             if vol_signal:
                 signals.append(vol_signal)
 
             details['volume'] = {
-                'score': max(0, volume_score),
+                'score': round(volume_score, 1),
                 'volume_ratio': vol_ratio,
                 'price_change': float(price_up),
                 'surge_type': vol_signal
             }
 
-            # ====== 6. 资金流向 (15分) ======
+            # ====== 6. 资金流向 (15分, 连续评分) ======
             _log("资金流评分...")
             try:
                 from fund_flow_fetcher import FundFlowFetcher
@@ -298,32 +294,29 @@ class ShortTermSelector:
             except Exception:
                 fund_flow = self.cache.get_fund_flow(code)
 
-            fund_score = 0
+            fund_score = 0.0
             fund_signal = None
             main_in_wan = 0
 
             if fund_flow:
                 main_in = fund_flow.get('main_in', 0)
-                main_in_wan = main_in / 10000  # 转换为万
+                main_in_wan = main_in / 10000
 
-                if main_in > 5000000:  # 主力流入>500万
-                    fund_score = 15
+                # 连续评分: ±500万为满分/负分边界
+                fund_score = float(np.clip(main_in / 5000000 * 15, -5, 15))
+                if main_in > 5000000:
                     fund_signal = f'主力流入 (+{main_in_wan:.0f}万)'
                     buy_signals.append(fund_signal)
-                elif main_in > 0:
-                    fund_score = 8
-                    fund_signal = f'小幅流入 (+{main_in_wan:.0f}万)'
                 elif main_in < -5000000:
-                    fund_score = 0
                     fund_signal = f'主力流出 ({main_in_wan:.0f}万)'
                     sell_signals.append(fund_signal)
 
                 if fund_signal and fund_signal not in signals:
-                    signals.append(fund_signal.split(' ')[0])  # 只取"主力流入"等
+                    signals.append(fund_signal.split(' ')[0])
 
             score += fund_score
             details['fund_flow'] = {
-                'score': fund_score,
+                'score': round(fund_score, 1),
                 'main_in': main_in_wan,
                 'signal': fund_signal
             }
@@ -370,7 +363,7 @@ class ShortTermSelector:
                 'atr': trade_points['atr'],
                 'atr_pct': trade_points['atr_pct'],
                 'risk_reward_ratio': trade_points['risk_reward_ratio'],
-                'recommend': bool(score >= 60 and buy_signal_count >= 2),
+                'recommend': bool(score >= 50 and buy_signal_count >= 2),
                 'update_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             }
 
@@ -439,33 +432,56 @@ class ShortTermSelector:
         短线选股TOP N
         返回推荐列表
         """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         print("=" * 60)
         print(f"⚡ 短线选股 - TOP {top_n}")
         print("=" * 60)
         print()
-        
+
         stocks = self.get_index_stocks()
         if not stocks:
             print("❌ 获取指数成分股失败")
             return []
-        
-        print(f"📊 分析 {len(stocks)} 只股票 (沪深300，已排除创业板/科创板)...")
+
+        # 限制掘金名称缓存只加载当前扫描范围的股票
+        try:
+            from diggold_source import DiggoldSource
+            DiggoldSource.set_filter_codes(stocks)
+        except Exception:
+            pass
+
+        print(f"📊 并行分析 {len(stocks)} 只股票...", flush=True)
         print()
 
         self.cache.preload_stocks(stocks)
 
-        results = []
-        for i, code in enumerate(stocks, 1):
-            print(f"[{i}/{len(stocks)}] {code}...", flush=True)
+        # 预初始化懒加载资源，避免并发竞态
+        if not hasattr(self, '_fund_fetcher'):
+            try:
+                from fund_flow_fetcher import FundFlowFetcher
+                self._fund_fetcher = FundFlowFetcher(cache=self.cache)
+            except Exception:
+                pass
 
-            result = self.analyze_single_stock(code)
-            if result:
-                print(f"  => ✅ {result['score']:.1f}分 ({result['rating']})", flush=True)
-                if result['signals']:
-                    print(f"     信号: {', '.join(result['signals'][:3])}", flush=True)
-                results.append(result)
-            else:
-                print(f"  => ❌ 跳过", flush=True)
+        results = []
+        done = 0
+        t0 = __import__('time').time()
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = {pool.submit(self.analyze_single_stock, code): code for code in stocks}
+            for future in as_completed(futures):
+                done += 1
+                code = futures[future]
+                try:
+                    result = future.result(timeout=30)
+                    if result:
+                        results.append(result)
+                        if done % 50 == 0 or done == len(stocks):
+                            print(f"  [{done}/{len(stocks)}] 已分析，累计 {len(results)} 只有效 ({__import__('time').time()-t0:.0f}s)", flush=True)
+                except Exception:
+                    pass
+
+        print(f"\n  分析完成: {len(results)}/{len(stocks)} 只有效 ({__import__('time').time()-t0:.0f}s)", flush=True)
         
         # 按评分排序
         results.sort(key=lambda x: x['score'], reverse=True)
