@@ -42,11 +42,12 @@ class DiggoldSource:
 
     # 股票名缓存 {code: name}
     _name_cache: Dict[str, str] = {}
+    # 只加载这些代码的名称（None=未设置，加载全部主板）
+    _filter_codes: Optional[set] = None
 
     def __init__(self):
         if not _AVAILABLE:
             raise RuntimeError(f'掘金 SDK 不可用: {_init_error}')
-        self._load_name_cache()
 
     @staticmethod
     def is_available() -> bool:
@@ -76,7 +77,7 @@ class DiggoldSource:
         return symbol.split('.')[-1] if '.' in symbol else symbol
 
     def _load_name_cache(self):
-        """一次性加载所有 A 股名称映射"""
+        """加载主板A股名称映射（排除创业板3xx、科创板688）"""
         if self._name_cache:
             return
         try:
@@ -92,15 +93,30 @@ class DiggoldSource:
                     sym = str(row.get(sym_col, ''))
                     name = str(row.get(name_col, ''))
                     if sym and name:
-                        self._name_cache[self._symbol_to_code(sym)] = name
-                print(f'✅ 掘金加载 {len(self._name_cache)} 只股票名称', flush=True)
+                        code = self._symbol_to_code(sym)
+                        # 只保留主板：排除创业板(3开头)、科创板(688开头)
+                        if code.startswith('3') or code.startswith('688'):
+                            continue
+                        # 如果设置了过滤列表，只保留列表中的代码
+                        if self._filter_codes is not None and code not in self._filter_codes:
+                            continue
+                        self._name_cache[code] = name
+                print(f'✅ 掘金加载 {len(self._name_cache)} 只主板股票名称', flush=True)
             else:
                 print('⚠️ 掘金 get_instruments 返回空数据', flush=True)
         except Exception as e:
             print(f'⚠️ 掘金加载名称缓存失败: {e}', flush=True)
 
+    @classmethod
+    def set_filter_codes(cls, codes: List[str]):
+        """设置只加载指定代码的名称（在创建实例前调用）"""
+        cls._filter_codes = set(codes)
+        cls._name_cache.clear()  # 清除旧缓存，下次 _load_name_cache 会重新加载
+
     def get_realtime_quote(self, code: str) -> Optional[Dict]:
         """获取单只股票最新行情"""
+        if not self._name_cache:
+            self._load_name_cache()
         try:
             symbol = self._code_to_symbol(code)
             df = history_n(
@@ -135,12 +151,18 @@ class DiggoldSource:
             return None
 
     def get_realtime_batch(self, codes: List[str]) -> List[Dict]:
-        """批量获取实时行情"""
+        """批量获取实时行情（并行）"""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         results = []
-        for code in codes:
-            data = self.get_realtime_quote(code)
-            if data:
-                results.append(data)
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = {pool.submit(self.get_realtime_quote, code): code for code in codes}
+            for future in as_completed(futures):
+                try:
+                    data = future.result(timeout=10)
+                    if data:
+                        results.append(data)
+                except Exception:
+                    pass
         return results
 
     def get_history_kline(self, code: str, days: int = 120) -> Optional[pd.DataFrame]:

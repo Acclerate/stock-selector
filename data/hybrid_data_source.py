@@ -436,61 +436,42 @@ class HybridDataSource:
             return None
     
     def _get_sina_batch(self, codes: List[str]) -> Optional[List[Dict]]:
-        """新浪财经批量查询"""
+        """新浪财经批量查询（每批50只，分批拉取）"""
         try:
-            # 转换为新浪格式
-            symbols = []
-            for code in codes:
-                if code.startswith('6'):
-                    symbols.append(f'sh{code}')
-                else:
-                    symbols.append(f'sz{code}')
-            
-            # 新浪限制：一次最多50只
-            if len(symbols) > 50:
-                symbols = symbols[:50]
-            
-            symbol_str = ','.join(symbols)
-            url = f'http://hq.sinajs.cn/list={symbol_str}'
-            response = requests.get(url, timeout=5)
-            
-            if response.status_code != 200:
-                return None
-            
-            # 解析批量数据
-            results = []
-            lines = response.text.strip().split('\n')
-            
-            for i, line in enumerate(lines):
-                if 'var hq_str_' not in line:
+            all_results = []
+            for start in range(0, len(codes), 50):
+                batch = codes[start:start + 50]
+                symbols = [('sh' if c.startswith('6') else 'sz') + c for c in batch]
+                url = f'http://hq.sinajs.cn/list={",".join(symbols)}'
+                response = requests.get(url, timeout=5)
+                if response.status_code != 200:
                     continue
-                
-                code = codes[i] if i < len(codes) else None
-                if not code:
-                    continue
-                
-                data_str = line.split('"')[1]
-                fields = data_str.split(',')
-                
-                if len(fields) < 32:
-                    continue
-                
-                name = fields[0]
-                price = float(fields[3])
-                prev_close = float(fields[2])
-                change_pct = ((price - prev_close) / prev_close) * 100
-                
-                results.append({
-                    'code': code,
-                    'name': name,
-                    'price': price,
-                    'change_pct': change_pct,
-                    'volume': float(fields[8]),
-                    'amount': float(fields[9]),
-                    'source': 'sina_batch'
-                })
-            
-            return results if results else None
+                lines = response.text.strip().split('\n')
+                for j, line in enumerate(lines):
+                    if 'var hq_str_' not in line or j >= len(batch):
+                        continue
+                    try:
+                        data_str = line.split('"')[1]
+                        fields = data_str.split(',')
+                        if len(fields) < 32:
+                            continue
+                        price = float(fields[3])
+                        prev_close = float(fields[2])
+                        change_pct = ((price - prev_close) / prev_close) * 100 if prev_close else 0
+                        all_results.append({
+                            'code': batch[j],
+                            'name': fields[0],
+                            'price': price,
+                            'change_pct': change_pct,
+                            'volume': float(fields[8]),
+                            'amount': float(fields[9]),
+                            'source': 'sina_batch'
+                        })
+                    except Exception:
+                        continue
+                if start + 50 < len(codes):
+                    time.sleep(0.2)
+            return all_results if all_results else None
         except Exception as e:
             print(f"⚠️ 新浪批量查询失败: {e}")
             return None

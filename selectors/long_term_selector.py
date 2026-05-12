@@ -27,14 +27,14 @@ class LongTermSelector:
         self._sti = ShortTermIndicators()
         
     def get_index_stocks(self) -> List[str]:
-        """从沪深300成分股中获取扫描范围，过滤创业板和科创板"""
+        """从沪深300+中证500成分股中获取扫描范围，过滤创业板和科创板"""
         import akshare as ak
         import sys, os
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'data'))
         try:
-            from config import SCAN_INDEX
+            from config import SCAN_INDICES
         except Exception:
-            SCAN_INDEX = "000300"
+            SCAN_INDICES = ["000300", "000905"]
 
         def _filter(codes):
             seen = set()
@@ -46,30 +46,33 @@ class LongTermSelector:
                 result.append(c)
             return result
 
-        # 方案1: 东方财富成分股接口（稳定，无需访问中证官网）
-        try:
-            print(f"获取{SCAN_INDEX}成分股（东方财富）...", flush=True)
-            df = ak.index_stock_cons(symbol=SCAN_INDEX)
-            codes = df['品种代码'].astype(str).str.zfill(6).tolist()
-            result = _filter(codes)
-            print(f"✅ 获取到 {len(result)} 只成分股", flush=True)
-            return result
-        except Exception as e:
-            print(f"⚠️ 东方财富成分股失败: {e}", flush=True)
+        all_codes = []
+        for idx in SCAN_INDICES:
+            idx_name = {"000300": "沪深300", "000905": "中证500"}.get(idx, idx)
+            try:
+                print(f"获取{idx_name}({idx})成分股（东方财富）...", flush=True)
+                df = ak.index_stock_cons(symbol=idx)
+                codes = df['品种代码'].astype(str).str.zfill(6).tolist()
+                all_codes.extend(codes)
+                print(f"  ✅ {idx_name}: {len(codes)} 只", flush=True)
+                continue
+            except Exception as e:
+                print(f"  ⚠️ 东方财富失败: {e}", flush=True)
+            try:
+                print(f"获取{idx_name}({idx})成分股（中证官网）...", flush=True)
+                df = ak.index_stock_cons_weight_csindex(symbol=idx)
+                codes = df['成分券代码'].astype(str).str.zfill(6).tolist()
+                all_codes.extend(codes)
+                print(f"  ✅ {idx_name}: {len(codes)} 只", flush=True)
+            except Exception as e:
+                print(f"  ⚠️ 中证官网失败: {e}", flush=True)
 
-        # 方案2: 中证指数官网（原方案，可能超时）
-        try:
-            print(f"获取{SCAN_INDEX}成分股（中证官网）...", flush=True)
-            df = ak.index_stock_cons_weight_csindex(symbol=SCAN_INDEX)
-            codes = df['成分券代码'].astype(str).str.zfill(6).tolist()
-            result = _filter(codes)
-            print(f"✅ 获取到 {len(result)} 只成分股", flush=True)
-            return result
-        except Exception as e:
-            print(f"⚠️ 中证官网成分股失败: {e}", flush=True)
-
-        print("❌ 所有成分股数据源均失败", flush=True)
-        return []
+        result = _filter(all_codes)
+        if result:
+            print(f"✅ 合计获取到 {len(result)} 只主板成分股", flush=True)
+        else:
+            print("❌ 所有成分股数据源均失败", flush=True)
+        return result
     
     def analyze_single_stock(self, code: str) -> Dict:
         """
@@ -129,95 +132,91 @@ class LongTermSelector:
                 'ma60': trend['ma60']
             }
             
-            # ====== 2. 动量评分 (15分) ======
+            # ====== 2. 动量评分 (15分, 连续评分) ======
             _log("动量+量能+强度+波动率评分...")
             returns_5d = (df['close'].iloc[-1] - df['close'].iloc[-6]) / df['close'].iloc[-6] * 100
             returns_20d = (df['close'].iloc[-1] - df['close'].iloc[-21]) / df['close'].iloc[-21] * 100
-            
-            momentum_score = 0
-            if returns_5d > 0:
-                momentum_score += 5
-            if returns_20d > 0:
-                momentum_score += 10
-            
+
+            # 连续评分: 5日±5%→±5分, 20日±10%→±10分
+            momentum_score = float(
+                np.clip(returns_5d / 5, -1, 1) * 5 +
+                np.clip(returns_20d / 10, -1, 1) * 10
+            )
+
             score += momentum_score
             details['momentum'] = {
-                'score': momentum_score,
+                'score': round(momentum_score, 1),
                 'returns_5d': returns_5d,
                 'returns_20d': returns_20d
             }
             
-            # ====== 3. 量能评分 (15分) ======
+            # ====== 3. 量能评分 (15分, 连续评分) ======
             obv = self.indicators.calc_obv(df)
             vol_ratio = self.indicators.calc_volume_ratio(df)
-            
-            volume_score = 0
-            # OBV上升
-            if obv.iloc[-1] > obv.iloc[-20]:
-                volume_score += 8
-            # 量比合理（0.8-2.0）
-            if 0.8 < vol_ratio.iloc[-1] < 2.0:
-                volume_score += 7
-            
+
+            # OBV变化率 → 连续评分
+            obv_now = obv.iloc[-1]
+            obv_20d = obv.iloc[-20]
+            obv_change = (obv_now - obv_20d) / (abs(obv_20d) + 1)
+            obv_score = float(np.clip(obv_change * 100, -5, 8))
+            # 量比评分: 1.4为最优, 偏离越多越差
+            vr = vol_ratio.iloc[-1]
+            vr_score = float(max(0, 7 - abs(vr - 1.4) * 5))
+            volume_score = obv_score + min(vr_score, 7.0)
+
             score += volume_score
             details['volume'] = {
-                'score': volume_score,
-                'obv_trend': 'up' if obv.iloc[-1] > obv.iloc[-20] else 'down',
-                'volume_ratio': vol_ratio.iloc[-1]
+                'score': round(volume_score, 1),
+                'obv_trend': 'up' if obv_now > obv_20d else 'down',
+                'volume_ratio': vr
             }
             
-            # ====== 4. 趋势强度 (10分) ======
+            # ====== 4. 趋势强度 (10分, 连续评分) ======
             adx, plus_di, minus_di = self.indicators.calc_adx(df)
-            
-            strength_score = 0
-            if adx.iloc[-1] > 25:  # ADX>25表示趋势明显
-                strength_score += 5
-            if plus_di.iloc[-1] > minus_di.iloc[-1]:  # 多头强势
-                strength_score += 5
-            
+
+            # ADX连续: 15→0分, 35→5分 (趋势强度)
+            adx_score = float(np.clip((adx.iloc[-1] - 15) / 20, 0, 1) * 5)
+            # DI差值连续: 多头优势程度
+            di_diff = (plus_di.iloc[-1] - minus_di.iloc[-1])
+            di_score = float(np.clip(di_diff / 30, -1, 1) * 5)
+            strength_score = adx_score + di_score
+
             score += strength_score
             details['strength'] = {
-                'score': strength_score,
+                'score': round(strength_score, 1),
                 'adx': adx.iloc[-1],
                 'plus_di': plus_di.iloc[-1],
                 'minus_di': minus_di.iloc[-1]
             }
             
-            # ====== 5. 波动率评分 (10分) ======
+            # ====== 5. 波动率评分 (10分, 连续评分) ======
             atr = self.indicators.calc_atr(df)
             volatility = df['close'].pct_change().std() * np.sqrt(252) * 100
-            
-            volatility_score = 0
-            # 波动率适中（15-35%年化）
-            if 15 < volatility < 35:
-                volatility_score = 10
-            elif 10 < volatility <= 15 or 35 <= volatility < 50:
-                volatility_score = 5
-            
+
+            # 钟形曲线: 25%为最优, 偏离越多分越低
+            volatility_score = float(10 * np.exp(-((volatility - 25) / 15) ** 2))
+
             score += volatility_score
             details['volatility'] = {
-                'score': volatility_score,
+                'score': round(volatility_score, 1),
                 'annual_volatility': volatility,
                 'atr': atr.iloc[-1]
             }
             
-            # ====== 6. 乖离率评分 (10分) ======
+            # ====== 6. 乖离率评分 (10分, 连续评分) ======
             bias = self.indicators.calc_bias(df, period=20)
-            
-            bias_score = 0
-            # 乖离率在合理范围(-10% ~ +15%)
-            if -10 < bias.iloc[-1] < 15:
-                bias_score = 10
-            elif -15 < bias.iloc[-1] <= -10 or 15 <= bias.iloc[-1] < 20:
-                bias_score = 5
-            
+            bias_val = bias.iloc[-1]
+
+            # 钟形曲线: +2.5%为最优位置, 偏离越多分越低
+            bias_score = float(10 * np.exp(-((bias_val - 2.5) / 10) ** 2))
+
             score += bias_score
             details['bias'] = {
-                'score': bias_score,
-                'bias_value': bias.iloc[-1]
+                'score': round(bias_score, 1),
+                'bias_value': bias_val
             }
             
-            # ====== 7. 资金流评分 (10分) ======
+            # ====== 7. 资金流评分 (10分, 连续评分) ======
             _log("资金流评分...")
             try:
                 from fund_flow_fetcher import FundFlowFetcher
@@ -226,20 +225,18 @@ class LongTermSelector:
                 fund_flow = self._fund_fetcher.fetch_and_save(code)
             except Exception:
                 fund_flow = self.cache.get_fund_flow(code)
-            
-            fund_score = 0
+
+            fund_score = 0.0
             if fund_flow:
                 main_in = fund_flow.get('main_in', 0)
-                if main_in > 0:
-                    fund_score = 10
-                elif main_in > -100000000:  # 流出不严重
-                    fund_score = 5
+                # 连续评分: ±1亿为满分/负分边界
+                fund_score = float(np.clip(main_in / 100000000 * 10, -5, 10))
             else:
-                fund_score = 5  # 无数据给中等分
-            
+                fund_score = 5.0
+
             score += fund_score
             details['fund_flow'] = {
-                'score': fund_score,
+                'score': round(fund_score, 1),
                 'main_in': fund_flow.get('main_in', 0) / 10000 if fund_flow else 0
             }
 
@@ -330,7 +327,7 @@ class LongTermSelector:
                 'stop_loss_pct': round(stop_loss_pct, 2),
                 'take_profit_pct': round(take_profit_pct, 2),
                 'risk_reward_ratio': round(risk_reward_ratio, 2),
-                'recommend': bool(score >= 70),  # 70分以上推荐
+                'recommend': bool(score >= 60),
                 'update_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             }
 
@@ -394,31 +391,55 @@ class LongTermSelector:
         选择TOP N股票
         返回推荐列表
         """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         print("=" * 60)
         print(f"🎯 中长线选股 - TOP {top_n}")
         print("=" * 60)
         print()
-        
+
         stocks = self.get_index_stocks()
         if not stocks:
             print("❌ 获取指数成分股失败")
             return []
-        
-        print(f"📊 分析 {len(stocks)} 只股票 (沪深300，已排除创业板/科创板)...")
+
+        # 限制掘金名称缓存只加载当前扫描范围的股票
+        try:
+            from diggold_source import DiggoldSource
+            DiggoldSource.set_filter_codes(stocks)
+        except Exception:
+            pass
+
+        print(f"📊 并行分析 {len(stocks)} 只股票...", flush=True)
         print()
 
         self.cache.preload_stocks(stocks)
 
+        if not hasattr(self, '_fund_fetcher'):
+            try:
+                from fund_flow_fetcher import FundFlowFetcher
+                self._fund_fetcher = FundFlowFetcher(cache=self.cache)
+            except Exception:
+                pass
+
         results = []
-        for i, code in enumerate(stocks, 1):
-            print(f"[{i}/{len(stocks)}] {code}...", flush=True)
-            
-            result = self.analyze_single_stock(code)
-            if result:
-                print(f"  => ✅ {result['score']:.1f}分 ({result['rating']})", flush=True)
-                results.append(result)
-            else:
-                print(f"  => ❌ 分析失败", flush=True)
+        done = 0
+        t0 = __import__('time').time()
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = {pool.submit(self.analyze_single_stock, code): code for code in stocks}
+            for future in as_completed(futures):
+                done += 1
+                code = futures[future]
+                try:
+                    result = future.result(timeout=30)
+                    if result:
+                        results.append(result)
+                        if done % 50 == 0 or done == len(stocks):
+                            print(f"  [{done}/{len(stocks)}] 已分析，累计 {len(results)} 只有效 ({__import__('time').time()-t0:.0f}s)", flush=True)
+                except Exception:
+                    pass
+
+        print(f"\n  分析完成: {len(results)}/{len(stocks)} 只有效 ({__import__('time').time()-t0:.0f}s)", flush=True)
         
         # 按评分排序
         results.sort(key=lambda x: x['score'], reverse=True)

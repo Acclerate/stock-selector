@@ -7,6 +7,7 @@ A股数据缓存管理 - SQLite数据库
 import sqlite3
 import json
 import os
+import threading
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
@@ -17,12 +18,22 @@ DB_PATH = os.path.join(_DATA_DIR, 'stock_cache.db')
 class StockCache:
     def __init__(self, db_path=DB_PATH):
         self.db_path = db_path
-        self.conn = None
+        self._local = threading.local()
+        self._write_lock = threading.Lock()
         self._init_db()
+
+    @property
+    def conn(self):
+        """Per-thread SQLite connection with WAL mode for concurrent reads."""
+        if not hasattr(self._local, 'conn') or self._local.conn is None:
+            c = sqlite3.connect(self.db_path, check_same_thread=False)
+            c.execute('PRAGMA journal_mode=WAL')
+            c.execute('PRAGMA busy_timeout=5000')
+            self._local.conn = c
+        return self._local.conn
     
     def _init_db(self):
         """初始化数据库表"""
-        self.conn = sqlite3.connect(self.db_path)
         cursor = self.conn.cursor()
         
         # 股票基础信息表
@@ -149,25 +160,24 @@ class StockCache:
     
     def save_stocks(self, stocks_data: List[Dict]):
         """批量保存股票数据"""
-        cursor = self.conn.cursor()
-        now = datetime.now()
-        
-        for stock in stocks_data:
-            cursor.execute('''
-                INSERT OR REPLACE INTO stocks 
-                (code, name, price, change_pct, volume, amount, update_time)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                stock['code'],
-                stock['name'],
-                stock['price'],
-                stock['change_pct'],
-                stock.get('volume', 0),
-                stock.get('amount', 0),
-                now
-            ))
-        
-        self.conn.commit()
+        with self._write_lock:
+            cursor = self.conn.cursor()
+            now = datetime.now()
+            for stock in stocks_data:
+                cursor.execute('''
+                    INSERT OR REPLACE INTO stocks
+                    (code, name, price, change_pct, volume, amount, update_time)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    stock['code'],
+                    stock['name'],
+                    stock['price'],
+                    stock['change_pct'],
+                    stock.get('volume', 0),
+                    stock.get('amount', 0),
+                    now
+                ))
+            self.conn.commit()
 
     def preload_stocks(self, codes: list, max_age_minutes: int = 30):
         """批量预加载：先查缓存缺失，再用多数据源批量拉取写入"""
@@ -540,26 +550,27 @@ class StockCache:
     
     def save_fund_flow(self, code: str, data: Dict):
         """保存主力资金数据"""
-        cursor = self.conn.cursor()
-        cursor.execute('''
-            INSERT OR REPLACE INTO fund_flow
-            (code, main_in, retail_in, main_ratio,
-             super_large_net, large_net, medium_net, small_net, days_continuous,
-             update_time)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            code,
-            data.get('main_in', 0),
-            data.get('retail_in', 0),
-            data.get('main_ratio', 0),
-            data.get('super_large_net', 0),
-            data.get('large_net', 0),
-            data.get('medium_net', 0),
-            data.get('small_net', 0),
-            data.get('days_continuous', 0),
-            datetime.now()
-        ))
-        self.conn.commit()
+        with self._write_lock:
+            cursor = self.conn.cursor()
+            cursor.execute('''
+                INSERT OR REPLACE INTO fund_flow
+                (code, main_in, retail_in, main_ratio,
+                 super_large_net, large_net, medium_net, small_net, days_continuous,
+                 update_time)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                code,
+                data.get('main_in', 0),
+                data.get('retail_in', 0),
+                data.get('main_ratio', 0),
+                data.get('super_large_net', 0),
+                data.get('large_net', 0),
+                data.get('medium_net', 0),
+                data.get('small_net', 0),
+                data.get('days_continuous', 0),
+                datetime.now()
+            ))
+            self.conn.commit()
 
     def get_fund_flow(self, code: str, max_age_hours=24) -> Optional[Dict]:
         """获取主力资金数据"""
@@ -591,24 +602,25 @@ class StockCache:
     
     def save_tech_indicators(self, code: str, data: Dict):
         """保存技术指标数据"""
-        cursor = self.conn.cursor()
-        cursor.execute('''
-            INSERT OR REPLACE INTO tech_indicators
-            (code, ma5, ma10, ma20, rsi, macd, dif, dea, update_time)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            code,
-            data.get('ma5'),
-            data.get('ma10'),
-            data.get('ma20'),
-            data.get('rsi'),
-            data.get('macd'),
-            data.get('macd_dif'),
-            data.get('macd_dea'),
-            datetime.now()
-        ))
-        self.conn.commit()
-    
+        with self._write_lock:
+            cursor = self.conn.cursor()
+            cursor.execute('''
+                INSERT OR REPLACE INTO tech_indicators
+                (code, ma5, ma10, ma20, rsi, macd, dif, dea, update_time)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                code,
+                data.get('ma5'),
+                data.get('ma10'),
+                data.get('ma20'),
+                data.get('rsi'),
+                data.get('macd'),
+                data.get('macd_dif'),
+                data.get('macd_dea'),
+                datetime.now()
+            ))
+            self.conn.commit()
+
     def get_tech_indicators(self, code: str, max_age_hours=24) -> Optional[Dict]:
         """获取技术指标数据"""
         cursor = self.conn.cursor()
@@ -636,26 +648,27 @@ class StockCache:
     
     def save_lhb(self, code: str, data: Dict):
         """保存龙虎榜数据"""
-        cursor = self.conn.cursor()
-        name = data.get('name', '')
-        # 确保 name 列存在
-        cursor.execute("PRAGMA table_info(lhb)")
-        columns = [col[1] for col in cursor.fetchall()]
-        if 'name' not in columns:
-            cursor.execute("ALTER TABLE lhb ADD COLUMN name TEXT DEFAULT ''")
-        cursor.execute('''
-            INSERT OR REPLACE INTO lhb
-            (code, name, buy_amount, sell_amount, net_amount, update_time)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (
-            code,
-            name,
-            data.get('buy_amount', 0),
-            data.get('sell_amount', 0),
-            data.get('net_amount', 0),
-            datetime.now()
-        ))
-        self.conn.commit()
+        with self._write_lock:
+            cursor = self.conn.cursor()
+            name = data.get('name', '')
+            # 确保 name 列存在
+            cursor.execute("PRAGMA table_info(lhb)")
+            columns = [col[1] for col in cursor.fetchall()]
+            if 'name' not in columns:
+                cursor.execute("ALTER TABLE lhb ADD COLUMN name TEXT DEFAULT ''")
+            cursor.execute('''
+                INSERT OR REPLACE INTO lhb
+                (code, name, buy_amount, sell_amount, net_amount, update_time)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (
+                code,
+                name,
+                data.get('buy_amount', 0),
+                data.get('sell_amount', 0),
+                data.get('net_amount', 0),
+                datetime.now()
+            ))
+            self.conn.commit()
     
     def get_lhb(self, code: str, max_age_hours=24) -> Optional[Dict]:
         """获取龙虎榜数据"""
@@ -718,12 +731,13 @@ class StockCache:
         import pickle
         trade_date = datetime.now().strftime('%Y-%m-%d')
         data_blob = pickle.dumps(df, protocol=4)
-        cursor = self.conn.cursor()
-        cursor.execute('''
-            INSERT OR REPLACE INTO history_kline (code, days, trade_date, data, update_time)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (code, days, trade_date, data_blob, datetime.now()))
-        self.conn.commit()
+        with self._write_lock:
+            cursor = self.conn.cursor()
+            cursor.execute('''
+                INSERT OR REPLACE INTO history_kline (code, days, trade_date, data, update_time)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (code, days, trade_date, data_blob, datetime.now()))
+            self.conn.commit()
 
     def get_history_kline(self, code: str, days: int) -> 'Optional[pd.DataFrame]':
         """
@@ -748,26 +762,27 @@ class StockCache:
 
     def save_fundamental(self, code: str, data: Dict):
         """保存基本面数据（财务指标，24小时有效）"""
-        cursor = self.conn.cursor()
-        cursor.execute('''
-            INSERT OR REPLACE INTO fundamental
-            (code, roe, profit_growth, dividend_yield, revenue_growth, pe,
-             gross_margin, net_margin, debt_to_asset, pb, update_time)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            code,
-            data.get('roe', 0.0),
-            data.get('profit_growth', 0.0),
-            data.get('dividend_yield', 0.0),
-            data.get('revenue_growth', 0.0),
-            data.get('pe', 0.0),
-            data.get('gross_margin', 0.0),
-            data.get('net_margin', 0.0),
-            data.get('debt_to_asset', 0.0),
-            data.get('pb', 0.0),
-            datetime.now()
-        ))
-        self.conn.commit()
+        with self._write_lock:
+            cursor = self.conn.cursor()
+            cursor.execute('''
+                INSERT OR REPLACE INTO fundamental
+                (code, roe, profit_growth, dividend_yield, revenue_growth, pe,
+                 gross_margin, net_margin, debt_to_asset, pb, update_time)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                code,
+                data.get('roe', 0.0),
+                data.get('profit_growth', 0.0),
+                data.get('dividend_yield', 0.0),
+                data.get('revenue_growth', 0.0),
+                data.get('pe', 0.0),
+                data.get('gross_margin', 0.0),
+                data.get('net_margin', 0.0),
+                data.get('debt_to_asset', 0.0),
+                data.get('pb', 0.0),
+                datetime.now()
+            ))
+            self.conn.commit()
 
     def get_fundamental(self, code: str, max_age_hours: int = 24) -> Optional[Dict]:
         """获取基本面数据缓存，超时返回 None"""
@@ -798,21 +813,22 @@ class StockCache:
 
     def save_company_profile(self, code: str, data: Dict):
         """保存公司画像（行业、经营范围等）"""
-        cursor = self.conn.cursor()
-        cursor.execute('''
-            INSERT OR REPLACE INTO company_profile
-            (code, industry, business_scope, pb, total_market_cap, float_market_cap, update_time)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            code,
-            data.get('industry', ''),
-            data.get('business_scope', ''),
-            data.get('pb', 0.0),
-            data.get('total_market_cap', 0.0),
-            data.get('float_market_cap', 0.0),
-            datetime.now()
-        ))
-        self.conn.commit()
+        with self._write_lock:
+            cursor = self.conn.cursor()
+            cursor.execute('''
+                INSERT OR REPLACE INTO company_profile
+                (code, industry, business_scope, pb, total_market_cap, float_market_cap, update_time)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                code,
+                data.get('industry', ''),
+                data.get('business_scope', ''),
+                data.get('pb', 0.0),
+                data.get('total_market_cap', 0.0),
+                data.get('float_market_cap', 0.0),
+                datetime.now()
+            ))
+            self.conn.commit()
 
     def get_company_profile(self, code: str, max_age_hours: int = 24) -> Optional[Dict]:
         """获取公司画像缓存"""
@@ -839,12 +855,13 @@ class StockCache:
 
     def save_stock_news(self, code: str, news_list: list):
         """保存股票新闻（JSON 序列化）"""
-        cursor = self.conn.cursor()
-        cursor.execute('''
-            INSERT OR REPLACE INTO stock_news (code, news_json, update_time)
-            VALUES (?, ?, ?)
-        ''', (code, json.dumps(news_list, ensure_ascii=False), datetime.now()))
-        self.conn.commit()
+        with self._write_lock:
+            cursor = self.conn.cursor()
+            cursor.execute('''
+                INSERT OR REPLACE INTO stock_news (code, news_json, update_time)
+                VALUES (?, ?, ?)
+            ''', (code, json.dumps(news_list, ensure_ascii=False), datetime.now()))
+            self.conn.commit()
 
     def get_stock_news(self, code: str, max_age_hours: int = 2) -> Optional[list]:
         """获取股票新闻缓存"""
@@ -860,9 +877,10 @@ class StockCache:
         return None
 
     def close(self):
-        """关闭数据库连接"""
-        if self.conn:
-            self.conn.close()
+        """关闭当前线程的数据库连接"""
+        if hasattr(self._local, 'conn') and self._local.conn:
+            self._local.conn.close()
+            self._local.conn = None
 
 
 # ============== 测试代码 ==============

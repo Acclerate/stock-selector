@@ -30,14 +30,14 @@ class EnhancedLongTermSelector:
         self._sti = ShortTermIndicators()
         
     def get_index_stocks(self) -> List[str]:
-        """从沪深300成分股中获取扫描范围，过滤创业板和科创板"""
+        """从沪深300+中证500成分股中获取扫描范围，过滤创业板和科创板"""
         import akshare as ak
         import sys, os
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'data'))
         try:
-            from config import SCAN_INDEX
+            from config import SCAN_INDICES
         except Exception:
-            SCAN_INDEX = "000300"
+            SCAN_INDICES = ["000300", "000905"]
 
         def _filter(codes):
             seen = set()
@@ -49,30 +49,33 @@ class EnhancedLongTermSelector:
                 result.append(c)
             return result
 
-        # 方案1: 东方财富成分股接口（稳定，无需访问中证官网）
-        try:
-            print(f"获取{SCAN_INDEX}成分股（东方财富）...", flush=True)
-            df = ak.index_stock_cons(symbol=SCAN_INDEX)
-            codes = df['品种代码'].astype(str).str.zfill(6).tolist()
-            result = _filter(codes)
-            print(f"✅ 获取到 {len(result)} 只成分股", flush=True)
-            return result
-        except Exception as e:
-            print(f"⚠️ 东方财富成分股失败: {e}", flush=True)
+        all_codes = []
+        for idx in SCAN_INDICES:
+            idx_name = {"000300": "沪深300", "000905": "中证500"}.get(idx, idx)
+            try:
+                print(f"获取{idx_name}({idx})成分股（东方财富）...", flush=True)
+                df = ak.index_stock_cons(symbol=idx)
+                codes = df['品种代码'].astype(str).str.zfill(6).tolist()
+                all_codes.extend(codes)
+                print(f"  ✅ {idx_name}: {len(codes)} 只", flush=True)
+                continue
+            except Exception as e:
+                print(f"  ⚠️ 东方财富失败: {e}", flush=True)
+            try:
+                print(f"获取{idx_name}({idx})成分股（中证官网）...", flush=True)
+                df = ak.index_stock_cons_weight_csindex(symbol=idx)
+                codes = df['成分券代码'].astype(str).str.zfill(6).tolist()
+                all_codes.extend(codes)
+                print(f"  ✅ {idx_name}: {len(codes)} 只", flush=True)
+            except Exception as e:
+                print(f"  ⚠️ 中证官网失败: {e}", flush=True)
 
-        # 方案2: 中证指数官网（原方案，可能超时）
-        try:
-            print(f"获取{SCAN_INDEX}成分股（中证官网）...", flush=True)
-            df = ak.index_stock_cons_weight_csindex(symbol=SCAN_INDEX)
-            codes = df['成分券代码'].astype(str).str.zfill(6).tolist()
-            result = _filter(codes)
-            print(f"✅ 获取到 {len(result)} 只成分股", flush=True)
-            return result
-        except Exception as e:
-            print(f"⚠️ 中证官网成分股失败: {e}", flush=True)
-
-        print("❌ 所有成分股数据源均失败", flush=True)
-        return []
+        result = _filter(all_codes)
+        if result:
+            print(f"✅ 合计获取到 {len(result)} 只主板成分股", flush=True)
+        else:
+            print("❌ 所有成分股数据源均失败", flush=True)
+        return result
     
     def analyze_single_stock(self, code: str) -> Dict:
         """
@@ -133,41 +136,48 @@ class EnhancedLongTermSelector:
             
             details['valuation'] = valuation_score
             
-            # ====== 4. 动量评分 (15分) ======
+            # ====== 4. 动量评分 (15分, 连续评分) ======
             _log("动量+量价+DMI评分...")
             returns_20d = (df['close'].iloc[-1] - df['close'].iloc[-21]) / df['close'].iloc[-21] * 100
-            momentum_score = 15 if returns_20d > 0 else 0
+            # 连续评分: ±10%→±15分
+            momentum_score = float(np.clip(returns_20d / 10, -1, 1) * 15)
             score += momentum_score
-            
+
             details['momentum'] = {
-                'score': momentum_score,
+                'score': round(momentum_score, 1),
                 'returns_20d': returns_20d
             }
             
-            # ====== 5. 量价评分 (15分) ======
+            # ====== 5. 量价评分 (15分, 连续评分) ======
             obv = self.indicators.calc_obv(df)
-            volume_score = 15 if obv.iloc[-1] > obv.iloc[-20] else 5
+            obv_now = obv.iloc[-1]
+            obv_20d = obv.iloc[-20]
+            obv_change = (obv_now - obv_20d) / (abs(obv_20d) + 1)
+            volume_score = float(np.clip(5 + obv_change * 100, -5, 15))
             score += volume_score
-            
+
             details['volume'] = {
-                'score': volume_score,
-                'obv_trend': 'up' if obv.iloc[-1] > obv.iloc[-20] else 'down'
+                'score': round(volume_score, 1),
+                'obv_trend': 'up' if obv_now > obv_20d else 'down'
             }
             
-            # ====== 6. DMI评分 (15分) ✨新增 ======
+            # ====== 6. DMI评分 (15分, 连续评分) ======
             plus_di, minus_di, adx = self.advanced_indicators.calc_dmi(df)
             dmi_analysis = self.advanced_indicators.analyze_dmi_signal(
                 plus_di.iloc[-1], minus_di.iloc[-1], adx.iloc[-1]
             )
-            dmi_score = 15 if dmi_analysis['signal'] in ['buy', 'strong_buy'] else 0
+            # DI差值 + ADX强度 → 连续评分
+            di_diff = (plus_di.iloc[-1] - minus_di.iloc[-1]) / 30
+            adx_strength = min(adx.iloc[-1] / 30, 1.0)
+            dmi_score = float(np.clip(di_diff * 10 * adx_strength, -8, 15))
             score += dmi_score
-            
+
             details['dmi'] = {
-                'score': dmi_score,
+                'score': round(dmi_score, 1),
                 **dmi_analysis
             }
             
-            # ====== 7. 资金流评分 (10分) ======
+            # ====== 7. 资金流评分 (10分, 连续评分) ======
             _log("资金流评分...")
             try:
                 from fund_flow_fetcher import FundFlowFetcher
@@ -176,11 +186,16 @@ class EnhancedLongTermSelector:
                 fund_flow = self._fund_fetcher.fetch_and_save(code)
             except Exception:
                 fund_flow = self.cache.get_fund_flow(code)
-            fund_score = 10 if fund_flow and fund_flow.get('main_in', 0) > 0 else 0
+
+            if fund_flow:
+                main_in = fund_flow.get('main_in', 0)
+                fund_score = float(np.clip(main_in / 100000000 * 10, -5, 10))
+            else:
+                fund_score = 0.0
             score += fund_score
-            
+
             details['fund_flow'] = {
-                'score': fund_score,
+                'score': round(fund_score, 1),
                 'main_in': fund_flow.get('main_in', 0) / 10000 if fund_flow else 0
             }
 
@@ -257,7 +272,7 @@ class EnhancedLongTermSelector:
                 'rating': self._get_rating(final_score),
                 'details': self._convert_to_json_safe(details),
                 'signal': optimized_signal,
-                'recommend': final_score >= 65,  # 65分以上推荐
+                'recommend': final_score >= 55,
                 'update_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                 # 新增字段
                 'buy_signals': buy_signals,
@@ -279,51 +294,33 @@ class EnhancedLongTermSelector:
             return None
     
     def _calc_fundamental_score(self, data: Dict) -> Dict:
-        """计算基本面评分 (30分)"""
-        score = 0
-        
-        # ROE (10分)
-        roe = data.get('roe', 0)
-        if roe >= 20:
-            score += 10
-        elif roe >= 15:
-            score += 8
-        elif roe >= 10:
-            score += 5
-        
-        # 利润增长 (10分)
-        profit_growth = data.get('profit_growth', 0)
-        if profit_growth >= 25:
-            score += 10
-        elif profit_growth >= 15:
-            score += 7
-        elif profit_growth >= 10:
-            score += 5
-        
-        # 股息率 (10分)
-        dividend = data.get('dividend_yield', 0)
-        if dividend >= 4:
-            score += 10
-        elif dividend >= 2:
-            score += 6
-        elif dividend >= 1:
-            score += 3
-        
+        """计算基本面评分 (30分, 连续评分)"""
+        # ROE (10分): 连续, ROE=20%→10分
+        roe = data.get('roe', 0) or 0
+        roe_score = float(np.clip(roe / 20, 0, 1) * 10)
+
+        # 利润增长 (10分): 连续, 增长25%→10分
+        profit_growth = data.get('profit_growth', 0) or 0
+        growth_score = float(np.clip(profit_growth / 25, 0, 1) * 10)
+
+        # 股息率 (10分): 连续, 股息4%→10分
+        dividend = data.get('dividend_yield', 0) or 0
+        dividend_score = float(np.clip(dividend / 4, 0, 1) * 10)
+
+        score = roe_score + growth_score + dividend_score
         level = 'A' if score >= 24 else 'B' if score >= 18 else 'C' if score >= 12 else 'D'
-        
+
         return {
-            'score': score,
+            'score': round(score, 1),
             'level': level,
-            'roe': data.get('roe', 0),
-            'profit_growth': data.get('profit_growth', 0),
-            'dividend_yield': data.get('dividend_yield', 0),
+            'roe': roe,
+            'profit_growth': profit_growth,
+            'dividend_yield': dividend,
             'revenue_growth': data.get('revenue_growth', 0)
         }
     
     def _calc_valuation_score(self, pe: float, growth: float) -> Dict:
-        """计算估值评分 (15分)"""
-        score = 0
-        
+        """计算估值评分 (15分, 连续评分)"""
         if pe <= 0 or growth <= 0:
             return {
                 'score': 0,
@@ -331,26 +328,23 @@ class EnhancedLongTermSelector:
                 'pe': pe,
                 'peg': None
             }
-        
-        # 计算PEG
+
         peg_data = self.advanced_indicators.calc_peg_ratio(pe, growth)
         peg = peg_data['peg']
-        
-        if peg and peg < 0.8:
-            score = 15
-            level = '低估'
-        elif peg and peg < 1.2:
-            score = 10
-            level = '合理'
-        elif peg and peg < 2.0:
-            score = 5
-            level = '偏高'
+
+        if peg:
+            # 连续评分: PEG=0.5→15分, PEG=2.0→0分
+            score = float(np.clip((2.0 - peg) / 1.5, 0, 1) * 15)
+            if peg < 0.8: level = '低估'
+            elif peg < 1.2: level = '合理'
+            elif peg < 2.0: level = '偏高'
+            else: level = '高估'
         else:
-            score = 0
-            level = '高估'
-        
+            score = 0.0
+            level = '无效'
+
         return {
-            'score': score,
+            'score': round(score, 1),
             'level': level,
             'pe': pe,
             'peg': peg,
@@ -403,31 +397,55 @@ class EnhancedLongTermSelector:
     
     def select_top_stocks(self, top_n: int = 5) -> List[Dict]:
         """选择TOP N股票"""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         print("=" * 60)
         print(f"🎯 增强版中长线选股 - TOP {top_n}")
         print("=" * 60)
         print()
-        
+
         stocks = self.get_index_stocks()
         if not stocks:
             print("❌ 获取指数成分股失败")
             return []
-        
-        print(f"📊 分析 {len(stocks)} 只股票（沪深300，含基本面分析）...")
+
+        # 限制掘金名称缓存只加载当前扫描范围的股票
+        try:
+            from diggold_source import DiggoldSource
+            DiggoldSource.set_filter_codes(stocks)
+        except Exception:
+            pass
+
+        print(f"📊 并行分析 {len(stocks)} 只股票（含基本面分析）...", flush=True)
         print()
 
         self.cache.preload_stocks(stocks)
 
+        if not hasattr(self, '_fund_fetcher'):
+            try:
+                from fund_flow_fetcher import FundFlowFetcher
+                self._fund_fetcher = FundFlowFetcher(cache=self.cache)
+            except Exception:
+                pass
+
         results = []
-        for i, code in enumerate(stocks, 1):
-            print(f"[{i}/{len(stocks)}] {code}...", flush=True)
-            
-            result = self.analyze_single_stock(code)
-            if result:
-                print(f"  => ✅ {result['score']:.1f}分 ({result['rating']})", flush=True)
-                results.append(result)
-            else:
-                print(f"  => ❌ 分析失败", flush=True)
+        done = 0
+        t0 = __import__('time').time()
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = {pool.submit(self.analyze_single_stock, code): code for code in stocks}
+            for future in as_completed(futures):
+                done += 1
+                code = futures[future]
+                try:
+                    result = future.result(timeout=30)
+                    if result:
+                        results.append(result)
+                        if done % 50 == 0 or done == len(stocks):
+                            print(f"  [{done}/{len(stocks)}] 已分析，累计 {len(results)} 只有效 ({__import__('time').time()-t0:.0f}s)", flush=True)
+                except Exception:
+                    pass
+
+        print(f"\n  分析完成: {len(results)}/{len(stocks)} 只有效 ({__import__('time').time()-t0:.0f}s)", flush=True)
         
         # 按评分排序
         results.sort(key=lambda x: x['score'], reverse=True)
