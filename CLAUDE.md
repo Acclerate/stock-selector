@@ -84,4 +84,4 @@ python data/stock_cache_db.py
 - `selector_app.py` 启动时通过 `sys.path.insert(0, ...)` 注入 `data/`、`selectors/`、`utils/` 目录，所以模块内使用裸 import（如 `from stock_cache_db import StockCache`）即可
 - 所有 Selector 返回结果中的 `details` 使用 `_convert_to_json_safe()` 处理 numpy/pandas 类型和 NaN
 - `.env` 文件存放 LLM API Key 和模型配置，`gpt_analyst.py` 启动时自动加载
-- 选股扫描范围由 `data/config.py` 中 `SCAN_INDICES` 控制，默认 `["000300", "000905"]`（沪深300+中证500）
+- 选股扫描范围由 `data/config.py` 中 `SCAN_INDICES` 控制，默认 `["000300", "000905", "000852", "000016"]`（沪深300+中证500+中证1000+上证50）

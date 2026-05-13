@@ -37,7 +37,7 @@ class EnhancedLongTermSelector:
         try:
             from config import SCAN_INDICES
         except Exception:
-            SCAN_INDICES = ["000300", "000905"]
+            SCAN_INDICES = ["000300", "000905", "000852", "000016"]
 
         def _filter(codes):
             seen = set()
@@ -51,7 +51,7 @@ class EnhancedLongTermSelector:
 
         all_codes = []
         for idx in SCAN_INDICES:
-            idx_name = {"000300": "沪深300", "000905": "中证500"}.get(idx, idx)
+            idx_name = {"000300": "沪深300", "000905": "中证500", "000852": "中证1000", "000016": "上证50"}.get(idx, idx)
             try:
                 print(f"获取{idx_name}({idx})成分股（东方财富）...", flush=True)
                 df = ak.index_stock_cons(symbol=idx)

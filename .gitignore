@@ -24,3 +24,5 @@ Thumbs.db
 *.txt
 !requirements.txt
 doc/*.md
+data/*.db-shm
+data/*.db-wal
