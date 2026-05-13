@@ -12,7 +12,7 @@
   + 动量(10) + 量能(10) + DMI(10) + 短线择时(15)
   + 资金流(10) + 龙虎榜(5) + 行业强弱(10) = 150
 
-推荐阈值: 归一化 ≥ 60
+推荐阈值: 归一化 ≥ 75
 """
 
 import pandas as pd
@@ -153,7 +153,7 @@ class EnhancedLongTermSelectorA:
             obv_now = obv.iloc[-1]
             obv_20d = obv.iloc[-20]
             obv_change = (obv_now - obv_20d) / (abs(obv_20d) + 1)
-            volume_score = float(np.clip(3 + obv_change * 70, -3, 10))
+            volume_score = float(np.clip(obv_change * 100, -10, 10))
             score += volume_score
             details['volume'] = {
                 'score': round(volume_score, 1),
@@ -167,7 +167,7 @@ class EnhancedLongTermSelectorA:
             )
             di_diff = (plus_di.iloc[-1] - minus_di.iloc[-1]) / 30
             adx_strength = min(adx.iloc[-1] / 30, 1.0)
-            dmi_score = float(np.clip(di_diff * 7 * adx_strength, -5, 10))
+            dmi_score = float(np.clip(di_diff * 10 * adx_strength, -8, 10))
             score += dmi_score
             details['dmi'] = {
                 'score': round(dmi_score, 1),
@@ -185,7 +185,7 @@ class EnhancedLongTermSelectorA:
             # 归一化60分对应原始90分, 若 phase1 + 75 < 90 → 不可能达标 → 跳过
             # ════════════════════════════════════════════════════════════════════
             phase2_max = 75
-            min_raw_for_recommend = 60 / 100 * self.MAX_RAW_SCORE
+            min_raw_for_recommend = 75 / 100 * self.MAX_RAW_SCORE
             if pre_filter and (score + phase2_max < min_raw_for_recommend):
                 return None
 
@@ -310,7 +310,7 @@ class EnhancedLongTermSelectorA:
                 'rating': self._get_rating(final_score),
                 'details': self._convert_to_json_safe(details),
                 'signal': optimized_signal,
-                'recommend': final_score >= 60,
+                'recommend': final_score >= 75,
                 'update_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                 'buy_signals': buy_signals,
                 'buy_signal_count': len(buy_signals),
@@ -492,41 +492,74 @@ class EnhancedLongTermSelectorA:
         """短线择时评分 (15分): RSI(4)+KDJ(4)+MACD(4)+布林(3)  [P0]"""
         sub_scores = {}
 
-        # RSI (4分): RSI 30→4分, RSI 65→0分, RSI>75→负分
+        # RSI (4分): 区间制 — 50-70满分, 40-50半分, 30-40三成, >70超买, <30超卖
         rsi = self._sti.calc_rsi(df)
         rsi_now = rsi.iloc[-1]
-        rsi_score = float(np.clip((65 - rsi_now) / 35, -0.3, 1.0) * 4)
+        if 50 <= rsi_now <= 70:
+            rsi_score = 4.0
+        elif 40 <= rsi_now < 50:
+            rsi_score = 2.0
+        elif 30 <= rsi_now < 40:
+            rsi_score = 1.2
+        elif rsi_now > 70:
+            rsi_score = 1.2
+        else:
+            rsi_score = 0.8
         sub_scores['rsi'] = {'score': round(rsi_score, 1), 'value': round(rsi_now, 1)}
 
-        # KDJ (4分): J值+金叉/死叉
+        # KDJ (4分): K>D方向(1.5) + J区间(1.5) + K区间(1.0)
         k, d, j = self._sti.calc_kdj(df)
         kdj_result = self._sti.detect_kdj_cross(k, d, j)
         j_cur = kdj_result['j']
-        j_base = float(np.clip((80 - j_cur) / 60, -0.3, 1.0) * 3)
-        cross_adj = 1 if kdj_result['golden_cross'] else (-1 if kdj_result['dead_cross'] else 0)
-        kdj_score = float(np.clip(j_base + cross_adj, -1, 4))
+        k_cur = float(k.iloc[-1])
+
+        # K>D 方向 (1.5分)
+        kdj_base = 1.5 if k_cur > float(d.iloc[-1]) else 0.0
+        # J区间 (1.5分): 20-80安全区满分, <20超卖, >80超买
+        if 20 < j_cur < 80:
+            kdj_base += 1.5
+        elif j_cur <= 20:
+            kdj_base += 1.0
+        else:
+            kdj_base += 0.5
+        # K区间 (1.0分): 50-80最佳操作区
+        if 50 <= k_cur <= 80:
+            kdj_base += 1.0
+        elif 30 <= k_cur < 50:
+            kdj_base += 0.5
+        kdj_score = float(np.clip(kdj_base, 0, 4))
         sub_scores['kdj'] = {
-            'score': round(kdj_score, 1), 'j': round(j_cur, 1),
+            'score': round(kdj_score, 1), 'k': round(k_cur, 1), 'j': round(j_cur, 1),
             'golden_cross': kdj_result['golden_cross'],
         }
 
-        # MACD (4分): 柱状图方向 + 金叉
+        # MACD (4分): DIF>DEA(1.5) + 红柱扩张(1.5) + DIF>0强势(1.0)
         dif, dea, hist = self._sti.calc_macd_short(df)
         macd_result = self._sti.detect_macd_cross(dif, dea, hist)
+        latest_dif = float(dif.iloc[-1])
+        latest_dea = float(dea.iloc[-1])
         hist_cur = macd_result['histogram']
         hist_prev = float(hist.iloc[-2]) if len(hist) > 1 else hist_cur
-        if df['close'].iloc[-1] > 0:
-            scale = df['close'].iloc[-1] * 0.005
-            hist_norm = hist_cur / scale if scale else 0
-            hist_delta = (hist_cur - hist_prev) / scale if scale else 0
-            macd_base = float(np.clip(hist_norm + hist_delta * 2, -2, 3))
-        else:
-            macd_base = 0.0
+
+        macd_base = 0.0
+        # DIF>DEA (1.5分)
+        if latest_dif > latest_dea:
+            macd_base += 1.5
+        # 红柱扩张 (1.5分)
+        if hist_cur > 0 and hist_cur > hist_prev:
+            macd_base += 1.5
+        elif hist_cur > 0:
+            macd_base += 0.5
+        # DIF>0 零轴上方强势 (1.0分)
+        if latest_dif > 0:
+            macd_base += 1.0
+        # 金叉保底
         if macd_result['golden_cross']:
             macd_base = max(macd_base, 3.0)
-        macd_score = float(np.clip(macd_base, -1, 4))
+        macd_score = float(np.clip(macd_base, 0, 4))
         sub_scores['macd'] = {
-            'score': round(macd_score, 1), 'hist': round(hist_cur, 4),
+            'score': round(macd_score, 1), 'dif': round(latest_dif, 4),
+            'dea': round(latest_dea, 4), 'hist': round(hist_cur, 4),
             'golden_cross': macd_result['golden_cross'],
         }
 
