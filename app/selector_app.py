@@ -70,7 +70,12 @@ from config import WEB_HOST, WEB_PORT
 
 # ── 报告存储 ──────────────────────────────────────────────────────────────────
 REPORTS_DIR = os.path.join(_ROOT, 'doc')
-_TYPE_NAMES = {'short': '短线', 'long': '中长线', 'enhanced': '增强版'}
+_TYPE_NAMES = {
+        'short': '短线(动量信号)',
+        'long': '中长线(综合评分)',
+        'enhanced': '增强版(基本面+技术)',
+        'enhanced_a': '增强版A(11维全维度)',
+    }
 
 
 def _save_report(report_text: str, selector_type: str, stocks: list) -> str:
@@ -117,6 +122,9 @@ def api_run_selector():
         elif selector_type == 'enhanced':
             from enhanced_long_term_selector import EnhancedLongTermSelector
             selector = EnhancedLongTermSelector()
+        elif selector_type == 'enhanced_a':
+            from enhanced_long_term_selector_a import EnhancedLongTermSelectorA
+            selector = EnhancedLongTermSelectorA()
         else:
             from long_term_selector import LongTermSelector
             selector = LongTermSelector()
@@ -243,8 +251,7 @@ def api_get_selector_report():
     if not stocks:
         return jsonify({'status': 'error', 'message': '无数据'})
 
-    type_names = {'short': '短线', 'long': '中长线', 'enhanced': '增强版'}
-    type_label = type_names.get(selector_type, '选股')
+    type_label = _TYPE_NAMES.get(selector_type, '选股')
 
     try:
         if selector_type == 'short':
@@ -253,6 +260,9 @@ def api_get_selector_report():
         elif selector_type == 'enhanced':
             from enhanced_long_term_selector import EnhancedLongTermSelector
             selector = EnhancedLongTermSelector()
+        elif selector_type == 'enhanced_a':
+            from enhanced_long_term_selector_a import EnhancedLongTermSelectorA
+            selector = EnhancedLongTermSelectorA()
         else:
             from long_term_selector import LongTermSelector
             selector = LongTermSelector()
@@ -388,6 +398,9 @@ def api_gpt_analyze():
             elif selector_type == 'enhanced':
                 from enhanced_long_term_selector import EnhancedLongTermSelector
                 selector = EnhancedLongTermSelector()
+            elif selector_type == 'enhanced_a':
+                from enhanced_long_term_selector_a import EnhancedLongTermSelectorA
+                selector = EnhancedLongTermSelectorA()
             else:
                 from long_term_selector import LongTermSelector
                 selector = LongTermSelector()
@@ -598,12 +611,19 @@ def api_reports_list():
                 continue
             fpath = os.path.join(REPORTS_DIR, fname)
             stat = os.stat(fpath)
-            # 从文件名解析策略类型
+            # 从文件名解析策略类型（兼容新旧格式）
             type_tag = '选股'
             for key, val in _TYPE_NAMES.items():
                 if fname.startswith(val):
                     type_tag = val
                     break
+            # 兼容旧格式短名文件（短线_xxx / 中长线_xxx / 增强版_xxx）
+            if type_tag == '选股':
+                legacy_map = {'短线': '短线(动量信号)', '中长线': '中长线(综合评分)', '增强版A': '增强版A(11维全维度)', '增强版': '增强版(基本面+技术)'}
+                for old, new in legacy_map.items():
+                    if fname.startswith(old):
+                        type_tag = new
+                        break
             files.append({
                 'filename': fname,
                 'size': stat.st_size,
@@ -747,11 +767,17 @@ def api_stock_analyze():
         elif selector_type == 'enhanced':
             from enhanced_long_term_selector import EnhancedLongTermSelector
             selector = EnhancedLongTermSelector()
+        elif selector_type == 'enhanced_a':
+            from enhanced_long_term_selector_a import EnhancedLongTermSelectorA
+            selector = EnhancedLongTermSelectorA()
         else:
             from long_term_selector import LongTermSelector
             selector = LongTermSelector()
 
-        result = selector.analyze_single_stock(code)
+        if selector_type == 'enhanced_a':
+            result = selector.analyze_single_stock(code, pre_filter=False)
+        else:
+            result = selector.analyze_single_stock(code)
         selector.close()
 
         if not result:

@@ -228,6 +228,7 @@
     .history-type-short{background:var(--red-dim);color:var(--red)}
     .history-type-long{background:var(--accent-dim);color:var(--accent)}
     .history-type-enh{background:var(--orange-dim);color:var(--orange)}
+    .history-type-enh-a{background:#ede9fe;color:#7c3aed}
     .history-info{flex:1;min-width:0}
     .history-time{font-size:.82rem;color:var(--text);font-weight:500}
     .history-meta{font-size:.73rem;color:var(--text-muted);margin-top:2px}
@@ -281,6 +282,7 @@
     .tag-short{background:var(--red-dim);color:var(--red)}
     .tag-long{background:var(--accent-dim);color:var(--accent)}
     .tag-enh{background:var(--orange-dim);color:var(--orange)}
+    .tag-enh-a{background:#ede9fe;color:#7c3aed}
 
     /* ── Refresh button ─────────────────────────────────────────────── */
     .refresh-btn{
@@ -360,6 +362,7 @@
           <option value="long">中长线（综合评分）</option>
           <option value="short">短线（动量信号）</option>
           <option value="enhanced">增强版（基本面+技术）</option>
+          <option value="enhanced_a">增强版A（11维全维度）</option>
         </select>
         <label>数量</label>
         <input type="number" id="top-n" value="5" min="1" max="20" style="width:56px">
@@ -417,7 +420,7 @@
     <details>
       <summary>使用说明</summary>
       <ol class="step-list">
-        <li>从下拉框选择策略类型：<span class="tag tag-short">短线</span><span class="tag tag-long">中长线</span><span class="tag tag-enh">增强版</span>，填写推荐数量（默认5只）。</li>
+        <li>从下拉框选择策略类型：<span class="tag tag-short">短线</span><span class="tag tag-long">中长线</span><span class="tag tag-enh">增强版</span><span class="tag tag-enh">增强版A</span>，填写推荐数量（默认5只）。</li>
         <li>点击 <strong>运行选股</strong>，系统自动扫描沪深300成分股（约250只主板蓝筹），根据历史K线计算技术指标并评分，完成后显示评分最高的 N 只。</li>
         <li>点击 <strong>导出报告</strong>，生成 Markdown 格式的选股报告并下载，文件名包含时间戳。</li>
         <li>点击 <strong>{{ llm_display_name }} 分析</strong>，将选股结果交给 {{ llm_display_name }} 生成深度研报，包含产业逻辑、三情景价格、买入/止损/止盈建议，支持流式实时输出。</li>
@@ -489,6 +492,23 @@
             <li>适合中期持仓，兼顾安全边际与成长性</li>
           </ul>
           <p style="margin-top:8px;color:var(--accent)">推荐阈值：总分 >= 65</p>
+        </div>
+        <div class="info-item">
+          <h4><span class="tag tag-enh-a">增强版A</span> 11维全维度策略（满分100）</h4>
+          <ul>
+            <li><strong>技术趋势 20分</strong>：MA5/MA20/MA60 多头排列 + AdvancedIndicators 趋势评分</li>
+            <li><strong>基本面 20分</strong>：ROE(7) + 利润增长率(7) + 股息率(6)，连续化评分</li>
+            <li><strong>财务质量 15分</strong>：毛利率(5) + 净利率(5) + 负债率(5)</li>
+            <li><strong>估值分析 15分</strong>：PEG 估值(8) + PB 破净/低估(7)</li>
+            <li><strong>动量 10分</strong>：20 日收益率连续映射，正收益线性加分</li>
+            <li><strong>量能 10分</strong>：OBV 20 日变化率，资金持续流入加分</li>
+            <li><strong>DMI 10分</strong>：DI 差值 &times; ADX 强度，趋势方向确认</li>
+            <li><strong>短线择时 15分</strong>：RSI(4) + KDJ(4) + MACD(4) + 布林(3)</li>
+            <li><strong>资金流精细化 10分</strong>：主力净流入(4) + 超大单占比(3) + 连续天数(3)</li>
+            <li><strong>龙虎榜 5分</strong>：近5日龙虎榜净买入额（5000万→满分）</li>
+            <li><strong>行业强弱 10分</strong>：个股20日涨幅 vs 所属行业20日涨幅</li>
+          </ul>
+          <p style="margin-top:8px;color:#7c3aed">推荐阈值：总分 &gt;= 60 | 原始满分150归一化至100</p>
         </div>
       </div>
     </details>
@@ -707,7 +727,7 @@ async function loadReportHistory(){
     if(d.status!=='success'||!d.data||!d.data.length){
       el.innerHTML='<div class="history-empty">暂无历史报告</div>';return;
     }
-    const typeClass={'短线':'history-type-short','中长线':'history-type-long','增强版':'history-type-enh'};
+    const typeClass={'短线(动量信号)':'history-type-short','中长线(综合评分)':'history-type-long','增强版(基本面+技术)':'history-type-enh','增强版A(11维全维度)':'history-type-enh-a'};
     el.innerHTML=d.data.map(f=>{
       const sizeKB=(f.size/1024).toFixed(1);
       const cls=typeClass[f.type]||'history-type-long';
