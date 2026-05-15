@@ -687,7 +687,7 @@ async function runGptAnalyze(){
     const r=await fetch('/api/selector/gpt-analyze',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({stocks:lastResults,stream:true})
+      body:JSON.stringify({stocks:lastResults,stream:true,type:document.getElementById('sel-type').value})
     });
     if(!r.ok){el.innerHTML='<p>请求失败: '+r.status+'</p>';return;}
     const reader=r.body.getReader();
@@ -835,7 +835,30 @@ function selectStock(code,name){
 async function analyzeSingleStock(){
   const input=document.getElementById('stock-search').value.trim();
   let code=_selectedCode||input.split(/\s+/)[0];
-  if(!code||code.length<4){alert('请输入或选择一只股票');return;}
+  if(!code||code.length<1){alert('请输入或选择一只股票');return;}
+
+  // If code is not pure digits (e.g. Chinese name), resolve via search API
+  if(!/^\d+$/.test(code)){
+    const btn=document.getElementById('analyze-btn');
+    btn.disabled=true; btn.textContent='搜索中...';
+    document.getElementById('status').textContent='正在搜索 "'+code+'"，请稍候...';
+    try{
+      const sr=await fetch('/api/stock/search?q='+encodeURIComponent(code));
+      const sd=await sr.json();
+      if(sd.status==='success'&&sd.data&&sd.data.length>0){
+        code=sd.data[0].code;
+      }else{
+        document.getElementById('status').textContent='Error: 未找到匹配的股票';
+        return;
+      }
+    }catch(e){
+      document.getElementById('status').textContent='Error: 搜索失败 - '+e.message;
+      return;
+    }finally{
+      btn.disabled=false; btn.textContent='🔍 查询个股';
+    }
+  }
+
   code=code.padStart(6,'0');
 
   const type=document.getElementById('sel-type').value;

@@ -714,6 +714,7 @@ def api_stock_search():
         return jsonify({'status': 'success', 'data': []})
 
     try:
+        from stock_cache_db import StockCache
         cache = StockCache()
         cursor = cache.conn.cursor()
         cursor.execute(
@@ -741,6 +742,37 @@ def api_stock_search():
                             existing_codes.add(code)
                             if len(results) >= 20:
                                 break
+            except Exception:
+                pass
+
+        # 仍然不足时，通过东方财富 search API 在线搜索
+        if len(results) < 3:
+            try:
+                import urllib.request, urllib.parse, json as _json
+                search_url = ('https://searchapi.eastmoney.com/api/suggest/get?'
+                              + urllib.parse.urlencode({
+                                  'input': q, 'type': '14',
+                                  'token': os.getenv('EASTMONEY_SEARCH_TOKEN'),
+                                  'count': '10',
+                              }))
+                req = urllib.request.Request(search_url, headers={'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(req, timeout=3) as resp:
+                    raw = resp.read().decode('utf-8', 'ignore')
+                em_data = _json.loads(raw)
+                existing_codes = {r['code'] for r in results}
+                for item in em_data.get('QuotationCodeTable', {}).get('Data', []):
+                    code = item.get('Code', '')
+                    name = item.get('Name', '')
+                    if not code or code in existing_codes:
+                        continue
+                    if item.get('SecurityTypeName', '') not in ('沪A', '深A', 'A股'):
+                        continue
+                    if not code.startswith(('0', '3', '6')):
+                        continue
+                    results.append({'code': code, 'name': name, 'price': None})
+                    existing_codes.add(code)
+                    if len(results) >= 20:
+                        break
             except Exception:
                 pass
 
