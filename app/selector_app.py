@@ -83,7 +83,11 @@ def _save_report(report_text: str, selector_type: str, stocks: list) -> str:
     os.makedirs(REPORTS_DIR, exist_ok=True)
     ts = datetime.now().strftime('%Y%m%d_%H%M%S')
     label = _TYPE_NAMES.get(selector_type, '选股')
-    filename = f"{label}_深度研报_{ts}.md"
+    if len(stocks) == 1:
+        stock_name = stocks[0].get('name', stocks[0].get('code', ''))
+        filename = f"{stock_name}_深度研报_{ts}.md"
+    else:
+        filename = f"{label}_深度研报_{ts}.md"
     filepath = os.path.join(REPORTS_DIR, filename)
     header = (
         f"> 策略：{label}  |  时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
@@ -373,17 +377,189 @@ def _calc_market_sentiment() -> dict:
         return {'score': None, 'level': '未知', 'description': '', 'dimensions': {}}
 
 
+# ── GPT 数据准备（公共逻辑） ────────────────────────────────────────────────
+
+def _prepare_stocks_for_gpt(stocks):
+    """将选股器输出适配为 gpt_analyst 所需格式，并丰富数据（画像/资金流/新闻/基本面）"""
+    stocks_data = []
+    for s in stocks:
+        det = s.get('details') or {}
+        trend = det.get('trend') or {}
+        momentum = det.get('momentum') or {}
+        volume = det.get('volume') or {}
+        strength = det.get('strength') or {}
+        volatility = det.get('volatility') or {}
+        bias = det.get('bias') or {}
+        ff  = det.get('fund_flow') or {}
+        trade = det.get('trade_points') or {}
+        rsi_det = det.get('rsi') or {}
+        kdj_det = det.get('kdj') or {}
+        macd_det = det.get('macd') or {}
+        boll_det = det.get('bollinger') or {}
+
+        entry = {
+            'code':       s.get('code'),
+            'name':       s.get('name'),
+            'price':      s.get('price'),
+            'change_pct': s.get('change_pct'),
+            'tech_indicators': {
+                'ma5':          trend.get('ma5') or (det.get('ma') or {}).get('ma5'),
+                'ma10':         trend.get('ma10') or (det.get('ma') or {}).get('ma10'),
+                'ma20':         trend.get('ma20'),
+                'ma60':         trend.get('ma60'),
+                'rsi':          rsi_det.get('value') or (det.get('rsi') or {}).get('value'),
+                'macd':         macd_det.get('macd_hist'),
+                'dif':          macd_det.get('dif'),
+                'dea':          macd_det.get('dea'),
+                'kdj_k':        kdj_det.get('k'),
+                'kdj_d':        kdj_det.get('d'),
+                'kdj_j':        kdj_det.get('j'),
+                'boll_upper':   boll_det.get('upper'),
+                'boll_mid':     boll_det.get('middle'),
+                'boll_lower':   boll_det.get('lower'),
+                'atr':          trade.get('atr'),
+                'adx':          strength.get('adx'),
+                'short_score':  s.get('score'),
+                'long_score':   s.get('score'),
+            },
+            'trend': {
+                'rating':     trend.get('rating'),
+                'reasons':    trend.get('reasons', []),
+            },
+            'momentum': {
+                'returns_5d':  momentum.get('returns_5d'),
+                'returns_20d': momentum.get('returns_20d'),
+            },
+            'volume': {
+                'obv_trend':    volume.get('obv_trend'),
+                'volume_ratio': volume.get('volume_ratio'),
+            },
+            'volatility': {
+                'value':       volatility.get('value'),
+                'rating':      volatility.get('rating'),
+            },
+            'bias': {
+                'bias_20':     bias.get('bias_20'),
+                'bias_60':     bias.get('bias_60'),
+            },
+            'fund_flow': {
+                'main_net_inflow':     ff.get('main_in'),
+                'main_net_inflow_pct': ff.get('main_ratio'),
+                'signal':              ff.get('signal'),
+            },
+            'selector_score':       s.get('score'),
+            'selector_rating':      s.get('rating'),
+            'buy_signals':          s.get('buy_signals', []),
+            'sell_signals':         s.get('sell_signals', []),
+            'stop_loss':            s.get('stop_loss'),
+            'take_profit':          s.get('take_profit'),
+            'stop_loss_pct':        s.get('stop_loss_pct'),
+            'take_profit_pct':      s.get('take_profit_pct'),
+            'risk_reward_ratio':    s.get('risk_reward_ratio'),
+        }
+        stocks_data.append(entry)
+
+    # 丰富数据：公司画像、详细资金流、新闻、扩展基本面
+    from stock_cache_db import StockCache
+    cache = StockCache()
+    try:
+        from fundamental_data import FundamentalData
+        from fund_flow_fetcher import FundFlowFetcher
+        _fd = FundamentalData(cache=cache)
+        _ff = FundFlowFetcher(cache=cache)
+
+        for entry in stocks_data:
+            code = entry.get('code', '')
+            try:
+                profile = _fd.get_company_profile(code)
+                if profile and profile.get('industry'):
+                    entry['company_profile'] = {
+                        'industry': profile.get('industry', ''),
+                        'business_scope': profile.get('business_scope', ''),
+                        'pb_ratio': profile.get('pb', 0),
+                        'total_market_cap': profile.get('total_market_cap', 0),
+                    }
+            except Exception:
+                pass
+            try:
+                flow = _ff.fetch_and_save(code)
+                if flow and flow.get('main_in'):
+                    entry['fund_flow'].update({
+                        'super_large_net': flow.get('super_large_net', 0),
+                        'large_net': flow.get('large_net', 0),
+                        'medium_net': flow.get('medium_net', 0),
+                        'small_net': flow.get('small_net', 0),
+                        'days_continuous': flow.get('days_continuous', 0),
+                    })
+            except Exception:
+                pass
+            try:
+                news = _fd.get_stock_news(code)
+                if news:
+                    entry['recent_news'] = news
+            except Exception:
+                pass
+            try:
+                fund = _fd.get_stock_fundamental(code)
+                if fund:
+                    entry['fundamental'] = {
+                        'roe': fund.get('roe', 0),
+                        'pe': fund.get('pe', 0),
+                        'pb': fund.get('pb', 0),
+                        'gross_margin': fund.get('gross_margin', 0),
+                        'net_margin': fund.get('net_margin', 0),
+                        'debt_to_asset': fund.get('debt_to_asset', 0),
+                        'profit_growth': fund.get('profit_growth', 0),
+                        'dividend_yield': fund.get('dividend_yield', 0),
+                    }
+            except Exception:
+                pass
+    except Exception:
+        pass
+    finally:
+        cache.close()
+
+    return stocks_data
+
+
+def _run_gpt_report(codes, stocks_data, stocks_raw, selector_type, use_stream):
+    """调用 LLM 生成研报并保存，返回 Response"""
+    from flask import Response, stream_with_context
+    from gpt_analyst import run_analysis
+    sentiment = _calc_market_sentiment()
+
+    if use_stream:
+        def generate():
+            chunks = []
+            try:
+                for chunk in run_analysis(codes, sentiment, stocks_data, stream=True):
+                    chunks.append(chunk)
+                    yield chunk
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                err = f'\n\n分析出错: {e}'
+                chunks.append(err)
+                yield err
+            finally:
+                _save_report(''.join(chunks), selector_type, stocks_raw)
+        return Response(stream_with_context(generate()), content_type='text/plain; charset=utf-8')
+    else:
+        report = run_analysis(codes, sentiment, stocks_data, stream=False)
+        _save_report(report, selector_type, stocks_raw)
+        return jsonify({'status': 'success', 'report': report})
+
+
 # ── GPT 深度分析 API ──────────────────────────────────────────────────────────
 @app.route('/api/selector/gpt-analyze', methods=['POST'])
 @login_required
 def api_gpt_analyze():
     """
-    对选股结果调用 GPT-4.1 生成深度研报
+    对选股结果调用 LLM 生成深度研报
     请求体: {"type": "short|long|enhanced", "top_n": 5}
       或传入已计算好的股票列表: {"stocks": [...]}
     可选: {"stream": true}  — 流式返回
     """
-    from flask import Response, stream_with_context
     data = request.json or {}
     stocks = data.get('stocks')
 
@@ -412,186 +588,12 @@ def api_gpt_analyze():
     if not stocks:
         return jsonify({'status': 'error', 'message': '选股结果为空，无法进行 GPT 分析'})
 
-    # 将选股器输出适配为 gpt_analyst 所需格式
-    codes = [s['code'] for s in stocks]
-    stocks_data = []
-    for s in stocks:
-        det = s.get('details') or {}
-        trend = det.get('trend') or {}
-        momentum = det.get('momentum') or {}
-        volume = det.get('volume') or {}
-        strength = det.get('strength') or {}
-        volatility = det.get('volatility') or {}
-        bias = det.get('bias') or {}
-        ff  = det.get('fund_flow') or {}
-        trade = det.get('trade_points') or {}
-        rsi_det = det.get('rsi') or {}
-        kdj_det = det.get('kdj') or {}
-        macd_det = det.get('macd') or {}
-        boll_det = det.get('bollinger') or {}
-
-        entry = {
-            'code':       s.get('code'),
-            'name':       s.get('name'),
-            'price':      s.get('price'),
-            'change_pct': s.get('change_pct'),
-            # 完整技术指标
-            'tech_indicators': {
-                'ma5':          trend.get('ma5') or (det.get('ma') or {}).get('ma5'),
-                'ma10':         trend.get('ma10') or (det.get('ma') or {}).get('ma10'),
-                'ma20':         trend.get('ma20'),
-                'ma60':         trend.get('ma60'),
-                'rsi':          rsi_det.get('value') or (det.get('rsi') or {}).get('value'),
-                'macd':         macd_det.get('macd_hist'),
-                'dif':          macd_det.get('dif'),
-                'dea':          macd_det.get('dea'),
-                'kdj_k':        kdj_det.get('k'),
-                'kdj_d':        kdj_det.get('d'),
-                'kdj_j':        kdj_det.get('j'),
-                'boll_upper':   boll_det.get('upper'),
-                'boll_mid':     boll_det.get('middle'),
-                'boll_lower':   boll_det.get('lower'),
-                'atr':          trade.get('atr'),
-                'adx':          strength.get('adx'),
-                'short_score':  s.get('score'),
-                'long_score':   s.get('score'),
-            },
-            # 趋势详情
-            'trend': {
-                'rating':     trend.get('rating'),
-                'reasons':    trend.get('reasons', []),
-            },
-            # 动量
-            'momentum': {
-                'returns_5d':  momentum.get('returns_5d'),
-                'returns_20d': momentum.get('returns_20d'),
-            },
-            # 量能
-            'volume': {
-                'obv_trend':    volume.get('obv_trend'),
-                'volume_ratio': volume.get('volume_ratio'),
-            },
-            # 波动率
-            'volatility': {
-                'value':       volatility.get('value'),
-                'rating':      volatility.get('rating'),
-            },
-            # 乖离率
-            'bias': {
-                'bias_20':     bias.get('bias_20'),
-                'bias_60':     bias.get('bias_60'),
-            },
-            # 资金流
-            'fund_flow': {
-                'main_net_inflow':     ff.get('main_in'),
-                'main_net_inflow_pct': ff.get('main_ratio'),
-                'signal':              ff.get('signal'),
-            },
-            # 选股专属字段
-            'selector_score':       s.get('score'),
-            'selector_rating':      s.get('rating'),
-            'buy_signals':          s.get('buy_signals', []),
-            'sell_signals':         s.get('sell_signals', []),
-            'stop_loss':            s.get('stop_loss'),
-            'take_profit':          s.get('take_profit'),
-            'stop_loss_pct':        s.get('stop_loss_pct'),
-            'take_profit_pct':      s.get('take_profit_pct'),
-            'risk_reward_ratio':    s.get('risk_reward_ratio'),
-        }
-        stocks_data.append(entry)
-
-    # ── 丰富数据：公司画像、详细资金流、新闻、扩展基本面 ──────────
-    from stock_cache_db import StockCache
-    _enrich_cache = StockCache()
-    try:
-        from fundamental_data import FundamentalData
-        from fund_flow_fetcher import FundFlowFetcher
-        _fd = FundamentalData(cache=_enrich_cache)
-        _ff = FundFlowFetcher(cache=_enrich_cache)
-
-        for entry in stocks_data:
-            code = entry.get('code', '')
-            # 1. 公司画像（行业、经营范围）
-            try:
-                profile = _fd.get_company_profile(code)
-                if profile and profile.get('industry'):
-                    entry['company_profile'] = {
-                        'industry': profile.get('industry', ''),
-                        'business_scope': profile.get('business_scope', ''),
-                        'pb_ratio': profile.get('pb', 0),
-                        'total_market_cap': profile.get('total_market_cap', 0),
-                    }
-            except Exception:
-                pass
-            # 2. 详细资金流（超大单/大单/中单/小单）
-            try:
-                flow = _ff.fetch_and_save(code)
-                if flow and flow.get('main_in'):
-                    entry['fund_flow'].update({
-                        'super_large_net': flow.get('super_large_net', 0),
-                        'large_net': flow.get('large_net', 0),
-                        'medium_net': flow.get('medium_net', 0),
-                        'small_net': flow.get('small_net', 0),
-                        'days_continuous': flow.get('days_continuous', 0),
-                    })
-            except Exception:
-                pass
-            # 3. 最近新闻
-            try:
-                news = _fd.get_stock_news(code)
-                if news:
-                    entry['recent_news'] = news
-            except Exception:
-                pass
-            # 4. 扩展基本面（毛利率、净利率、负债率）
-            try:
-                fund = _fd.get_stock_fundamental(code)
-                if fund:
-                    entry['fundamental'] = {
-                        'roe': fund.get('roe', 0),
-                        'pe': fund.get('pe', 0),
-                        'pb': fund.get('pb', 0),
-                        'gross_margin': fund.get('gross_margin', 0),
-                        'net_margin': fund.get('net_margin', 0),
-                        'debt_to_asset': fund.get('debt_to_asset', 0),
-                        'profit_growth': fund.get('profit_growth', 0),
-                        'dividend_yield': fund.get('dividend_yield', 0),
-                    }
-            except Exception:
-                pass
-    except Exception:
-        pass
-    finally:
-        _enrich_cache.close()
-
-    # 获取市场情绪数据
-    sentiment = _calc_market_sentiment()
-
-    use_stream = bool(data.get('stream', False))
     selector_type = data.get('type', 'long')
+    codes = [s['code'] for s in stocks]
+    stocks_data = _prepare_stocks_for_gpt(stocks)
 
     try:
-        from gpt_analyst import run_analysis
-        if use_stream:
-            def generate():
-                chunks = []
-                try:
-                    for chunk in run_analysis(codes, sentiment, stocks_data, stream=True):
-                        chunks.append(chunk)
-                        yield chunk
-                except Exception as e:
-                    import traceback
-                    traceback.print_exc()
-                    err = f'\n\n分析出错: {e}'
-                    chunks.append(err)
-                    yield err
-                finally:
-                    _save_report(''.join(chunks), selector_type, stocks)
-            return Response(stream_with_context(generate()), content_type='text/plain; charset=utf-8')
-        else:
-            report = run_analysis(codes, sentiment, stocks_data, stream=False)
-            _save_report(report, selector_type, stocks)
-            return jsonify({'status': 'success', 'report': report})
+        return _run_gpt_report(codes, stocks_data, stocks, selector_type, bool(data.get('stream', False)))
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -823,6 +825,50 @@ def api_stock_analyze():
         })
     except Exception as e:
         import traceback; traceback.print_exc()
+        return jsonify({'status': 'error', 'message': str(e)})
+
+
+@app.route('/api/stock/gpt-analyze', methods=['POST'])
+@login_required
+def api_stock_gpt_analyze():
+    """单只股票 AI 深度研报，请求体: {code, type, stream}"""
+    data = request.json or {}
+    code = str(data.get('code', '')).strip().zfill(6)
+    selector_type = data.get('type', 'long')
+
+    if not code.isdigit() or len(code) != 6:
+        return jsonify({'status': 'error', 'message': '请输入6位股票代码'})
+
+    try:
+        if selector_type == 'short':
+            from short_term_selector import ShortTermSelector
+            selector = ShortTermSelector()
+        elif selector_type == 'enhanced':
+            from enhanced_long_term_selector import EnhancedLongTermSelector
+            selector = EnhancedLongTermSelector()
+        elif selector_type == 'enhanced_a':
+            from enhanced_long_term_selector_a import EnhancedLongTermSelectorA
+            selector = EnhancedLongTermSelectorA()
+        else:
+            from long_term_selector import LongTermSelector
+            selector = LongTermSelector()
+
+        if selector_type == 'enhanced_a':
+            result = selector.analyze_single_stock(code, pre_filter=False)
+        else:
+            result = selector.analyze_single_stock(code)
+        selector.close()
+
+        if not result:
+            return jsonify({'status': 'error', 'message': f'无法分析 {code}，可能无历史数据'})
+
+        stocks = [result]
+        stocks_data = _prepare_stocks_for_gpt(stocks)
+
+        return _run_gpt_report([code], stocks_data, stocks, selector_type, bool(data.get('stream', False)))
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({'status': 'error', 'message': str(e)})
 
 

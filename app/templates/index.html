@@ -373,6 +373,7 @@
           <div id="search-dropdown"></div>
         </div>
         <button class="btn btn-outline" onclick="analyzeSingleStock()" id="analyze-btn">&#128269; 查询</button>
+        <button class="btn btn-ai" onclick="analyzeSingleStockGpt()" id="single-gpt-btn">&#9733; AI 研报</button>
       </div>
     </div>
 
@@ -731,15 +732,15 @@ async function loadReportHistory(){
     el.innerHTML=d.data.map(f=>{
       const sizeKB=(f.size/1024).toFixed(1);
       const cls=typeClass[f.type]||'history-type-long';
-      return `<div class="history-item" id="hi-${f.filename.replace(/[^a-zA-Z0-9_]/g,'_')}">
+      return `<div class="history-item" data-filename="${f.filename.replace(/"/g,'&quot;')}" id="hi-${f.filename.replace(/[^a-zA-Z0-9_]/g,'_')}">
         <span class="history-type ${cls}">${f.type}</span>
         <div class="history-info">
           <div class="history-time">${f.time}</div>
           <div class="history-meta">${sizeKB} KB</div>
         </div>
         <div class="history-actions">
-          <button onclick="viewReport('${f.filename.replace(/'/g,"\\'")}',this)">查看</button>
-          <button class="btn-del" onclick="deleteReport('${f.filename.replace(/'/g,"\\'")}',this)">删除</button>
+          <button onclick="viewReport(this.closest('.history-item').dataset.filename,this)">查看</button>
+          <button class="btn-del" onclick="deleteReport(this.closest('.history-item').dataset.filename,this)">删除</button>
         </div>
       </div>`;
     }).join('');
@@ -883,6 +884,75 @@ async function analyzeSingleStock(){
     document.getElementById('status').textContent='Error: '+e.message;
   }finally{
     btn.disabled=false; btn.textContent='🔍 查询个股';
+  }
+}
+
+async function analyzeSingleStockGpt(){
+  const input=document.getElementById('stock-search').value.trim();
+  let code=_selectedCode||input.split(/\s+/)[0];
+  if(!code||code.length<1){alert('请输入或选择一只股票');return;}
+
+  if(!/^\d+$/.test(code)){
+    const btn=document.getElementById('single-gpt-btn');
+    btn.disabled=true; btn.textContent='搜索中...';
+    document.getElementById('status').textContent='正在搜索 "'+code+'"，请稍候...';
+    try{
+      const sr=await fetch('/api/stock/search?q='+encodeURIComponent(code));
+      const sd=await sr.json();
+      if(sd.status==='success'&&sd.data&&sd.data.length>0){
+        code=sd.data[0].code;
+      }else{
+        document.getElementById('status').textContent='Error: 未找到匹配的股票';
+        return;
+      }
+    }catch(e){
+      document.getElementById('status').textContent='Error: 搜索失败 - '+e.message;
+      return;
+    }finally{
+      btn.disabled=false; btn.textContent='★ AI 研报';
+    }
+  }
+
+  code=code.padStart(6,'0');
+
+  const type=document.getElementById('sel-type').value;
+  const btn=document.getElementById('single-gpt-btn');
+  const card=document.getElementById('gpt-card');
+  const el=document.getElementById('gpt-report');
+  btn.disabled=true; btn.textContent='分析中...';
+  _gptRawText='';
+  el.innerHTML='';
+  el.classList.add('report-streaming');
+  card.style.display='';
+  card.scrollIntoView({behavior:'smooth',block:'start'});
+  document.getElementById('status').textContent='正在生成 '+code+' AI 深度研报，请稍候...';
+
+  try{
+    const r=await fetch('/api/stock/gpt-analyze',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({code,type,stream:true})
+    });
+    const reader=r.body.getReader();
+    const decoder=new TextDecoder();
+    let done=false;
+    while(!done){
+      const{value,done:d}=await reader.read();
+      done=d;
+      if(value){
+        const chunk=decoder.decode(value,{stream:true});
+        _gptRawText+=chunk;
+        el.innerHTML=marked.parse(_gptRawText);
+        el.scrollTop=el.scrollHeight;
+      }
+    }
+    el.classList.remove('report-streaming');
+    btn.disabled=false; btn.textContent='★ AI 研报';
+    document.getElementById('status').textContent=
+      new Date().toLocaleString('zh-CN')+'  AI 研报完成：'+code;
+  }catch(e){
+    el.classList.remove('report-streaming');
+    btn.disabled=false; btn.textContent='★ AI 研报';
+    document.getElementById('status').textContent='Error: '+e.message;
   }
 }
 </script>

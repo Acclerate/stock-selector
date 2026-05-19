@@ -20,10 +20,34 @@ LLM 深度分析模块 — 支持 GPT-4.1（Responses API）和 DeepSeek（Chat 
 
 import datetime as dt
 import json
+import logging
 import os
+import socket
+import struct
 import sys
+import time
 from pathlib import Path
-from typing import Generator, List, Optional
+from typing import Generator, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
+
+# ── 网络时间常量 ────────────────────────────────────────────────────────────
+_NTP_TIMEOUT    = 2               # SNTP 超时（秒）
+_TIME_CACHE_TTL = 300             # 5 分钟缓存
+_TIME_TOL_MIN   = 2               # 与本地时间允许偏差（分钟）
+
+# NTP 服务器（国内优先，SNTP 协议零依赖）
+_NTP_SERVERS = [
+    'ntp.aliyun.com',             # 阿里云
+    'time.cloud.tencent.com',     # 腾讯云
+    'ntp1.nim.ac.cn',             # 国家授时中心
+    'cn.ntp.org.cn',              # 中国 NTP 联合池
+    'time.windows.com',           # 微软（兜底）
+]
+
+# 运行时状态
+_time_cache: Optional[Tuple[str, dt.datetime, float]] = None
+_local_offset: Optional[float] = None  # 网络时间 - 本地时间（秒），断网兜底
 
 # ── 自动加载 .env ─────────────────────────────────────────────────────────
 _env_path = Path(__file__).resolve().parents[1] / ".env"
@@ -52,7 +76,8 @@ _DS_API_KEY  = os.environ.get("DEEPSEEK_API_KEY", "")
 _DS_MODEL    = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
 
 # ── System Prompt ─────────────────────────────────────────────────────────
-_SYSTEM_PROMPT = """\
+
+_PROMPT_HEADER = """\
 你是一位专业的A股分析师，遵循严格的"证据优先、过程透明"分析原则。
 
 ## 核心原则
@@ -60,6 +85,15 @@ _SYSTEM_PROMPT = """\
 2. **双逻辑分离**：所有股票判断必须拆分为 产业逻辑 + 交易逻辑 两层。
 3. **三情景输出**：每只股票给出 强/中/弱 三个价格情景及对应操作动作。
 4. **不确定性标注**：置信度低于"中"时，必须明确写出不确定因素与修正计划。
+5. **时间敏感判断**：基于提供的网络北京时间进行交易决策判断，考虑当前是否在交易时段、收盘时间、次日开盘预期等。
+
+## 时间维度分析要求
+根据提供的网络北京时间（含星期几、小时、是否交易时间），在分析中必须考虑：
+- **交易时段判断**：当前是否在A股交易时间（9:30-11:30, 13:00-15:00）
+- **收盘前后策略**：临近收盘时的操作建议与盘中不同
+- **隔夜风险**：当前时间距次日开盘的时间跨度，对持仓建议的影响
+- **交易日历**：是否为周末/节假日，对资金安排和次日预期的影响
+- **时间节点操作**：针对不同时间段（早盘/尾盘/盘前）给出差异化操作建议
 
 ## 分析报告必须包含以下结构（按顺序）
 
@@ -89,8 +123,64 @@ _SYSTEM_PROMPT = """\
    - 弱情景：触发条件 → 止损位 → 动作
 9. **证据卡片**（E1 行情数据 / E2 官方披露 / E3 主流媒体 / E4 板块验证）
 10. **置信度**（高/中/低 + 原因）
+"""
 
-### 3) 组合分层建议（多只股票时）
+_PROMPT_TAIL_SINGLE = """\
+
+### 3) 同业竞争格局深度对比
+- 列出该股所在细分行业的 3~5 家核心竞争对手（A股上市公司），给出股票代码和简称
+- 对比核心指标：市值、PE(TTM)、ROE、营收增速、利润增速、毛利率，用表格呈现（数据来自自身知识，标注"估算"）
+- 该股在行业中的竞争地位（龙头/次龙头/追赶者/边缘），优势与劣势分别列出
+- 行业当前所处周期阶段（导入期/成长期/成熟期/衰退期）及对个股的映射
+
+### 4) 催化剂与风险日历
+- **潜在催化剂**（按时间紧迫度排序）：
+  - 近期即将发生的事件（财报披露、解禁、股东大会、行业政策等）
+  - 中期可预见的事件（产品发布、产能投产、行业展会等）
+  - 估算每个催化剂对股价的可能影响幅度（+3~5% / +5~10% / >+10%）
+- **风险事件**（按杀伤力排序）：
+  - 每个风险的发生概率估算（低/中/高）及潜在跌幅
+  - 最大尾部风险是什么，如何提前识别信号
+
+### 5) 机构持仓与聪明资金动向
+- 基于提供的资金流数据（超大单/大单净流入趋势），判断机构资金近期行为：
+  - 近 5 日 / 20 日机构资金是净流入还是净流出？趋势是加速还是衰减？
+  - 散户 vs 机构的博弈态势（散户接盘 / 机构吸筹 / 双方对峙）
+- 结合自身知识补充：最新一季基金/北向对该股的持仓变化趋势（如已知）
+
+### 6) 历史相似形态回溯
+- 基于当前的技术面特征（均线排列、MACD/RSI 位置、量能变化），回忆 A 股历史上（近 2 年）出现过类似形态的案例
+- 列出 1~3 个历史案例，说明：当时的股票代码、形态描述、后续 5~20 日走势
+- 从历史案例中提炼规律，对本次判断的参考意义
+
+### 7) 综合操作建议
+- **持仓状态判断**：假设投资者当前持有该股，处于什么状态（深套/浅套/微盈/获利）
+- **三种持仓场景的对应操作**：
+  - 场景A（已重仓）：建议动作、目标减仓/加仓价位
+  - 场景B（轻仓观望）：建议动作、建仓价位和仓位比例
+  - 场景C（空仓关注）：建议动作、关注触发条件
+- **关键价位标注**：强支撑位 / 弱支撑位 / 多空分界线 / 弱压力位 / 强压力位
+- **建议操作周期**：短线（1~5 日）/ 波段（1~4 周）/ 中线（1~3 月），附理由
+
+### 8) 不确定性与自我修正
+- 本轮最不确定的 2~3 个点
+- 可能导致错判的条件
+- 下一轮补证据与阈值修正计划
+
+### 9) 一句话总结
+> 用一句话（≤30字）概括本次分析的核心结论，格式：**「{代码} {名称}：{状态} — {建议动作}」**
+
+## 注意事项
+- 优先使用提供的结构化数据（company_profile、recent_news、fund_flow 细分、fundamental 扩展指标）写作相应章节；如果某部分数据缺失，则标注"数据缺失，建议补充"。
+- 如果结构化数据不足（如技术指标缺失），在不确定性部分说明并建议补充。
+- 输出语言：中文为主，技术指标名词可中英混写。
+- 报告末尾必须有"一句话总结"章节。
+- 禁止因篇幅原因精简或省略任何章节。
+"""
+
+_PROMPT_TAIL_MULTI = """\
+
+### 3) 组合分层建议
 - A组（产业+交易逻辑同向）/ B组（产业在/交易弱）/ C组（交易逻辑受损）
 - 风险集中度说明；仓位调整优先级排序
 
@@ -107,16 +197,107 @@ _SYSTEM_PROMPT = """\
 - 如果结构化数据不足（如技术指标缺失），在不确定性部分说明并建议补充。
 - 输出语言：中文为主，技术指标名词可中英混写。
 - 报告末尾必须有"一句话总结"章节。
+- 禁止因篇幅原因精简或省略任何章节，每只股票必须包含全部10个子节。
 """
+
+
+# ── 网络时间获取 ────────────────────────────────────────────────────────────
+
+# NTP 纪元起点：1900-01-01 00:00:00
+_NTP_EPOCH = dt.datetime(1900, 1, 1)
+
+
+def _sntp_query(server: str, timeout: float = _NTP_TIMEOUT) -> Optional[dt.datetime]:
+    """纯 socket SNTP 查询，零外部依赖，单次 UDP 收发 ~50ms"""
+    # NTP 客户端请求：48 字节，首字节 0x1B (LI=0, VN=3, Mode=3=client)
+    buf = struct.pack('!48B', 0x1B, *([0] * 47))
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.settimeout(timeout)
+        sock.sendto(buf, (server, 123))
+        data, _ = sock.recvfrom(48)
+    # 响应的第 40-47 字节是 Transmit Timestamp（NTP 秒 + 小数秒）
+    secs = struct.unpack('!II', data[40:48])
+    ntp_seconds = secs[0] + secs[1] / (2 ** 32)
+    # NTP 时间戳从 1900 起算，转成 UTC+8
+    utc8 = _NTP_EPOCH + dt.timedelta(seconds=ntp_seconds + 8 * 3600)
+    # SNTP 往返延迟约几十毫秒，对股票分析精度足够
+    return utc8
+
+
+def _fetch_network_time() -> Tuple[Optional[str], Optional[dt.datetime]]:
+    """SNTP 优先，失败则用历史偏移量修正本地时间"""
+    global _time_cache, _local_offset
+
+    now = time.time()
+    if _time_cache and now - _time_cache[2] < _TIME_CACHE_TTL:
+        return _time_cache[0], _time_cache[1]
+
+    # ── SNTP（国内 NTP 服务器，UDP ~50ms）──
+    for server in _NTP_SERVERS:
+        try:
+            network_dt = _sntp_query(server)
+            if network_dt and network_dt.year > 2020:
+                _local_offset = (network_dt - dt.datetime.now()).total_seconds()
+                _time_cache = (f'SNTP/{server}', network_dt, now)
+                return _time_cache[0], network_dt
+        except Exception as e:
+            logger.debug(f"SNTP failed ({server}): {e}")
+
+    # ── 用历史偏移量修正本地时间 ──
+    if _local_offset is not None:
+        corrected = dt.datetime.now() + dt.timedelta(seconds=_local_offset)
+        _time_cache = ('本地+偏移', corrected, now)
+        return '本地+偏移', corrected
+
+    return None, None
+
+
+def _get_current_time_info() -> Tuple[str, dt.datetime, str]:
+    """返回 (时间描述, datetime, 来源)"""
+    source_name, network_dt = _fetch_network_time()
+    local_dt = dt.datetime.now()
+
+    if not network_dt:
+        return (
+            local_dt.strftime('%Y-%m-%d %H:%M:%S') + " (本地时间)",
+            local_dt,
+            "本地时间",
+        )
+
+    diff_min = int((network_dt - local_dt).total_seconds() / 60)
+    if abs(diff_min) <= _TIME_TOL_MIN:
+        suffix = "与本地时间一致"
+    else:
+        direction = "快" if diff_min > 0 else "慢"
+        suffix = f"比本地时间{direction}{abs(diff_min / 60):.1f}小时"
+
+    ts = network_dt.strftime('%Y-%m-%d %H:%M:%S')
+    return f"{ts} (北京时间，{suffix})", network_dt, f"网络时间({source_name})"
 
 
 # ── 数据构建 ──────────────────────────────────────────────────────────────
 
 def _build_prompt(codes: List[str], sentiment: dict, stocks_data: list) -> str:
     """将缓存数据组装成 GPT 用户消息"""
-    ts = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    time_desc, current_dt, time_source = _get_current_time_info()
+    ts = current_dt.strftime("%Y-%m-%d %H:%M:%S")
+    # 交易时间判断 (9:30-11:30, 13:00-15:00)，排除午休和周末
+    h, m = current_dt.hour, current_dt.minute
+    is_weekend = current_dt.weekday() >= 5
+    is_lunch_break = (h == 11 and m >= 30) or (h == 12) or (h == 13 and m == 0)
+    is_trading = not is_weekend and not is_lunch_break and (
+        (9 < h < 11) or (h == 9 and m >= 30) or (h == 11 and m < 30) or
+        (13 < h < 15) or (h == 13 and m > 0) or (h == 15 and m == 0)
+    )
     payload = {
         "timestamp": ts,
+        "time_description": time_desc,
+        "time_source": time_source,
+        "current_weekday": current_dt.strftime("%A"),
+        "current_hour": h,
+        "current_minute": m,
+        "is_trading_time": is_trading,
+        "is_weekend": is_weekend,
         "codes": codes,
         "market_sentiment": {
             "score": sentiment.get("score"),
@@ -260,7 +441,8 @@ def _build_prompt(codes: List[str], sentiment: dict, stocks_data: list) -> str:
 
     return (
         "## 分析请求\n"
-        f"- 时间戳：{ts}\n"
+        f"- 当前时间：{time_desc}\n"
+        f"- 时间来源：{time_source}\n"
         f"- 分析标的：{', '.join(codes)}\n\n"
         "## 结构化市场数据（JSON）\n"
         "```json\n"
@@ -308,6 +490,12 @@ def _get_deepseek_client():
     return OpenAI(base_url=_DS_BASE_URL, api_key=_DS_API_KEY)
 
 
+def _build_system_prompt(codes: List[str]) -> str:
+    """根据标的数量选择单股深度或组合分析的 prompt"""
+    tail = _PROMPT_TAIL_SINGLE if len(codes) == 1 else _PROMPT_TAIL_MULTI
+    return _PROMPT_HEADER + tail
+
+
 def run_analysis(
     codes: List[str],
     sentiment: dict,
@@ -320,43 +508,42 @@ def run_analysis(
     - stream=True：返回 Generator[str, None, None]，逐 token yield
     """
     backend, actual_model = _resolve_model_and_backend()
-    print(f"[LLM] 使用后端={backend} 模型={actual_model}", flush=True)
+    system_prompt = _build_system_prompt(codes)
+    print(f"[LLM] 使用后端={backend} 模型={actual_model} 标的数={len(codes)}", flush=True)
     user_msg = _build_prompt(codes, sentiment, stocks_data)
 
     if backend == "deepseek":
-        return _run_deepseek(actual_model, user_msg, stream)
+        return _run_deepseek(actual_model, user_msg, stream, system_prompt)
     else:
-        return _run_gpt(actual_model, user_msg, stream)
+        return _run_gpt(actual_model, user_msg, stream, system_prompt)
 
 
 # ── GPT (Responses API) ──────────────────────────────────────────────────
 
-def _run_gpt(model: str, user_msg: str, stream: bool):
+def _run_gpt(model: str, user_msg: str, stream: bool, system_prompt: str):
     client = _get_gpt_client()
-    input_messages = _build_responses_messages(user_msg)
-    chat_messages = _build_chat_messages(user_msg)
+    input_messages = _build_responses_messages(user_msg, system_prompt)
+    chat_messages = _build_chat_messages(user_msg, system_prompt)
     if stream:
         return _gpt_stream(client, model, input_messages, chat_messages)
     try:
-        # 优先使用 Responses API（与当前项目默认保持一致）
         resp = client.responses.create(model=model, input=input_messages)
         return resp.output[0].content[0].text
     except Exception:
-        # 兼容 02 项目的 Chat Completions 路径
         resp = client.chat.completions.create(model=model, messages=chat_messages, stream=False)
         return resp.choices[0].message.content
 
 
-def _build_responses_messages(user_msg: str) -> list:
+def _build_responses_messages(user_msg: str, system_prompt: str) -> list:
     return [
-        {"role": "system", "content": [{"type": "input_text", "text": _SYSTEM_PROMPT}]},
+        {"role": "system", "content": [{"type": "input_text", "text": system_prompt}]},
         {"role": "user",   "content": [{"type": "input_text", "text": user_msg}]},
     ]
 
 
-def _build_chat_messages(user_msg: str) -> list:
+def _build_chat_messages(user_msg: str, system_prompt: str) -> list:
     return [
-        {"role": "system", "content": _SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_msg},
     ]
 
@@ -383,10 +570,10 @@ def _gpt_stream(client, model: str, input_messages: list, chat_messages: list) -
 
 # ── DeepSeek (Chat Completions API) ──────────────────────────────────────
 
-def _run_deepseek(model: str, user_msg: str, stream: bool):
+def _run_deepseek(model: str, user_msg: str, stream: bool, system_prompt: str):
     client = _get_deepseek_client()
     messages = [
-        {"role": "system", "content": _SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
         {"role": "user",   "content": user_msg},
     ]
     print(f"[DeepSeek] model={model}, stream={stream}, msg_len={len(user_msg)}", flush=True)
